@@ -30,6 +30,7 @@ const RESERVED_ID: &str = "__cedar";
 //
 // For now, internally, `Id`s are just owned `SmolString`s.
 #[derive(Serialize, Debug, PartialEq, Eq, Clone, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Id(SmolStr);
 
 impl Id {
@@ -92,6 +93,7 @@ impl FromNormalizedStr for Id {
 
 /// An `Id` that is not equal to `__cedar`, as specified by RFC 52
 #[derive(Serialize, Debug, PartialEq, Eq, Clone, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct UnreservedId(pub(crate) Id);
 
 impl From<UnreservedId> for Id {
@@ -187,67 +189,67 @@ impl<'de> Deserialize<'de> for UnreservedId {
     }
 }
 
-#[cfg(feature = "arbitrary")]
-impl<'a> arbitrary::Arbitrary<'a> for Id {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // identifier syntax:
-        // IDENT     := ['_''a'-'z''A'-'Z']['_''a'-'z''A'-'Z''0'-'9']* - RESERVED
-        // BOOL      := 'true' | 'false'
-        // RESERVED  := BOOL | 'if' | 'then' | 'else' | 'in' | 'is' | 'like' | 'has'
+// #[cfg(feature = "arbitrary")]
+// impl<'a> arbitrary::Arbitrary<'a> for Id {
+//     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+//         // identifier syntax:
+//         // IDENT     := ['_''a'-'z''A'-'Z']['_''a'-'z''A'-'Z''0'-'9']* - RESERVED
+//         // BOOL      := 'true' | 'false'
+//         // RESERVED  := BOOL | 'if' | 'then' | 'else' | 'in' | 'is' | 'like' | 'has'
 
-        let construct_list = |s: &str| s.chars().collect::<Vec<char>>();
-        let list_concat = |s1: &[char], s2: &[char]| [s1, s2].concat();
-        // the set of the first character of an identifier
-        let head_letters = construct_list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_");
-        // the set of the remaining characters of an identifier
-        let tail_letters = list_concat(&construct_list("0123456789"), &head_letters);
-        // identifier character count minus 1
-        let remaining_length = u.int_in_range(0..=16)?;
-        let mut cs = vec![*u.choose(&head_letters)?];
-        cs.extend(
-            (0..remaining_length)
-                .map(|_| u.choose(&tail_letters))
-                .collect::<Result<Vec<&char>, _>>()?,
-        );
-        let mut s: String = cs.into_iter().collect();
-        // Should the parsing fails, the string should be reserved word.
-        // Append a `_` to create a valid Id.
-        if crate::parser::parse_ident(&s).is_err() {
-            s.push('_');
-        }
-        Ok(Self::new_unchecked(s))
-    }
+//         let construct_list = |s: &str| s.chars().collect::<Vec<char>>();
+//         let list_concat = |s1: &[char], s2: &[char]| [s1, s2].concat();
+//         // the set of the first character of an identifier
+//         let head_letters = construct_list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_");
+//         // the set of the remaining characters of an identifier
+//         let tail_letters = list_concat(&construct_list("0123456789"), &head_letters);
+//         // identifier character count minus 1
+//         let remaining_length = u.int_in_range(0..=16)?;
+//         let mut cs = vec![*u.choose(&head_letters)?];
+//         cs.extend(
+//             (0..remaining_length)
+//                 .map(|_| u.choose(&tail_letters))
+//                 .collect::<Result<Vec<&char>, _>>()?,
+//         );
+//         let mut s: String = cs.into_iter().collect();
+//         // Should the parsing fails, the string should be reserved word.
+//         // Append a `_` to create a valid Id.
+//         if crate::parser::parse_ident(&s).is_err() {
+//             s.push('_');
+//         }
+//         Ok(Self::new_unchecked(s))
+//     }
 
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        arbitrary::size_hint::and_all(&[
-            // for arbitrary length
-            <usize as arbitrary::Arbitrary>::size_hint(depth),
-            // for arbitrary choices
-            // we use the size hint of a vector of `u8` to get an underestimate of bytes required by the sequence of choices.
-            <Vec<u8> as arbitrary::Arbitrary>::size_hint(depth),
-        ])
-    }
-}
+//     fn size_hint(depth: usize) -> (usize, Option<usize>) {
+//         arbitrary::size_hint::and_all(&[
+//             // for arbitrary length
+//             <usize as arbitrary::Arbitrary>::size_hint(depth),
+//             // for arbitrary choices
+//             // we use the size hint of a vector of `u8` to get an underestimate of bytes required by the sequence of choices.
+//             <Vec<u8> as arbitrary::Arbitrary>::size_hint(depth),
+//         ])
+//     }
+// }
 
-#[cfg(feature = "arbitrary")]
-impl<'a> arbitrary::Arbitrary<'a> for UnreservedId {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let id: Id = u.arbitrary()?;
-        match UnreservedId::try_from(id.clone()) {
-            Ok(id) => Ok(id),
-            Err(_) => {
-                // PANIC SAFETY: `___cedar` is a valid unreserved id
-                #[allow(clippy::unwrap_used)]
-                let new_id = format!("_{id}").parse().unwrap();
-                Ok(new_id)
-            }
-        }
-    }
+// #[cfg(feature = "arbitrary")]
+// impl<'a> arbitrary::Arbitrary<'a> for UnreservedId {
+//     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+//         let id: Id = u.arbitrary()?;
+//         match UnreservedId::try_from(id.clone()) {
+//             Ok(id) => Ok(id),
+//             Err(_) => {
+//                 // PANIC SAFETY: `___cedar` is a valid unreserved id
+//                 #[allow(clippy::unwrap_used)]
+//                 let new_id = format!("_{id}").parse().unwrap();
+//                 Ok(new_id)
+//             }
+//         }
+//     }
 
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        <Id as arbitrary::Arbitrary>::size_hint(depth)
-    }
-}
+//     fn size_hint(depth: usize) -> (usize, Option<usize>) {
+//         <Id as arbitrary::Arbitrary>::size_hint(depth)
+//     }
+// }
 
 /// Like `Id`, except this specifically _can_ contain Cedar reserved identifiers.
 /// (It still can't contain, for instance, spaces or characters like '+'.)
@@ -332,44 +334,44 @@ impl FromNormalizedStr for AnyId {
     }
 }
 
-#[cfg(feature = "arbitrary")]
-impl<'a> arbitrary::Arbitrary<'a> for AnyId {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // AnyId syntax:
-        // ['_''a'-'z''A'-'Z']['_''a'-'z''A'-'Z''0'-'9']*
+// #[cfg(feature = "arbitrary")]
+// impl<'a> arbitrary::Arbitrary<'a> for AnyId {
+//     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+//         // AnyId syntax:
+//         // ['_''a'-'z''A'-'Z']['_''a'-'z''A'-'Z''0'-'9']*
 
-        let construct_list = |s: &str| s.chars().collect::<Vec<char>>();
-        let list_concat = |s1: &[char], s2: &[char]| [s1, s2].concat();
-        // the set of the first character of an AnyId
-        let head_letters = construct_list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_");
-        // the set of the remaining characters of an AnyId
-        let tail_letters = list_concat(&construct_list("0123456789"), &head_letters);
-        // identifier character count minus 1
-        let remaining_length = u.int_in_range(0..=16)?;
-        let mut cs = vec![*u.choose(&head_letters)?];
-        cs.extend(
-            (0..remaining_length)
-                .map(|_| u.choose(&tail_letters))
-                .collect::<Result<Vec<&char>, _>>()?,
-        );
-        let s: String = cs.into_iter().collect();
-        debug_assert!(
-            crate::parser::parse_anyid(&s).is_ok(),
-            "all strings constructed this way should be valid AnyIds, but this one is not: {s:?}"
-        );
-        Ok(Self::new_unchecked(s))
-    }
+//         let construct_list = |s: &str| s.chars().collect::<Vec<char>>();
+//         let list_concat = |s1: &[char], s2: &[char]| [s1, s2].concat();
+//         // the set of the first character of an AnyId
+//         let head_letters = construct_list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_");
+//         // the set of the remaining characters of an AnyId
+//         let tail_letters = list_concat(&construct_list("0123456789"), &head_letters);
+//         // identifier character count minus 1
+//         let remaining_length = u.int_in_range(0..=16)?;
+//         let mut cs = vec![*u.choose(&head_letters)?];
+//         cs.extend(
+//             (0..remaining_length)
+//                 .map(|_| u.choose(&tail_letters))
+//                 .collect::<Result<Vec<&char>, _>>()?,
+//         );
+//         let s: String = cs.into_iter().collect();
+//         debug_assert!(
+//             crate::parser::parse_anyid(&s).is_ok(),
+//             "all strings constructed this way should be valid AnyIds, but this one is not: {s:?}"
+//         );
+//         Ok(Self::new_unchecked(s))
+//     }
 
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        arbitrary::size_hint::and_all(&[
-            // for arbitrary length
-            <usize as arbitrary::Arbitrary>::size_hint(depth),
-            // for arbitrary choices
-            // we use the size hint of a vector of `u8` to get an underestimate of bytes required by the sequence of choices.
-            <Vec<u8> as arbitrary::Arbitrary>::size_hint(depth),
-        ])
-    }
-}
+//     fn size_hint(depth: usize) -> (usize, Option<usize>) {
+//         arbitrary::size_hint::and_all(&[
+//             // for arbitrary length
+//             <usize as arbitrary::Arbitrary>::size_hint(depth),
+//             // for arbitrary choices
+//             // we use the size hint of a vector of `u8` to get an underestimate of bytes required by the sequence of choices.
+//             <Vec<u8> as arbitrary::Arbitrary>::size_hint(depth),
+//         ])
+//     }
+// }
 
 // PANIC SAFETY: unit-test code
 #[allow(clippy::panic)]

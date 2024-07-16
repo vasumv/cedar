@@ -55,6 +55,7 @@ extern crate tsify;
 #[serde(untagged)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum CedarValueJson {
     /// The `__expr` escape has been removed, but is still reserved in order to throw meaningful errors.
     ExprEscape {
@@ -108,6 +109,7 @@ pub enum CedarValueJson {
 /// Structure representing a Cedar record in JSON
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct JsonRecord {
     /// Cedar records must have string keys, but values can be any
     /// `CedarValueJson`s, even heterogeneously
@@ -168,6 +170,7 @@ impl JsonRecord {
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TypeAndId {
     /// Entity typename
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
@@ -214,6 +217,7 @@ impl TryFrom<TypeAndId> for EntityUID {
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FnAndArg {
     /// Extension constructor function
     #[serde(rename = "fn")]
