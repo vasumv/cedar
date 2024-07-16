@@ -34,14 +34,14 @@
 // cloning.
 
 use super::cst;
-use super::err::{self, parse_errors, ParseError, ParseErrors, ToASTError, ToASTErrorKind};
+use super::err::{parse_errors, ParseError, ParseErrors, ToASTError, ToASTErrorKind};
 use super::loc::Loc;
 use super::node::Node;
 use super::unescape::{to_pattern, to_unescaped_string};
 use super::util::{flatten_tuple_2, flatten_tuple_3, flatten_tuple_4};
 use crate::ast::{
-    self, ActionConstraint, CallStyle, EntityReference, EntityUID, Integer, PatternElem,
-    PolicySetError, PrincipalConstraint, PrincipalOrResourceConstraint, ResourceConstraint,
+    self, ActionConstraint, CallStyle, Integer, PatternElem, PolicySetError, PrincipalConstraint,
+    PrincipalOrResourceConstraint, ResourceConstraint, UnreservedId,
 };
 use crate::est::extract_single_argument;
 use itertools::Either;
@@ -51,13 +51,19 @@ use std::collections::{BTreeMap, HashSet};
 use std::mem;
 use std::sync::Arc;
 
+/// Defines the function `cst::Expr::to_ref_or_refs` and other similar functions
+/// for converting CST expressions into one or multiple entity UIDS. Used to
+/// extract entity uids from expressions that appear in the policy scope.
+mod to_ref_or_refs;
+use to_ref_or_refs::OneOrMultipleRefs;
+
 /// Type alias for convenience
 type Result<T> = std::result::Result<T, ParseErrors>;
 
 // for storing extension function names per callstyle
 struct ExtStyles<'a> {
     functions: HashSet<&'a ast::Name>,
-    methods: HashSet<&'a str>,
+    methods: HashSet<ast::UnreservedId>,
 }
 
 // Store extension function call styles
@@ -70,7 +76,7 @@ fn load_styles() -> ExtStyles<'static> {
     for func in crate::extensions::Extensions::all_available().all_funcs() {
         match func.style() {
             CallStyle::FunctionStyle => functions.insert(func.name()),
-            CallStyle::MethodStyle => methods.insert(func.name().basename().as_ref()),
+            CallStyle::MethodStyle => methods.insert(func.name().basename()),
         };
     }
     ExtStyles { functions, methods }
@@ -361,6 +367,11 @@ impl Node<Option<cst::Annotation>> {
 }
 
 impl Node<Option<cst::Ident>> {
+    /// Convert `cst::Ident` to `ast::UnreservedId`. Fails for reserved or invalid identifiers
+    pub(crate) fn to_unreserved_ident(&self) -> Result<ast::UnreservedId> {
+        self.to_valid_ident()
+            .and_then(|id| id.try_into().map_err(ParseErrors::singleton))
+    }
     /// Convert `cst::Ident` to `ast::Id`. Fails for reserved or invalid identifiers
     pub fn to_valid_ident(&self) -> Result<ast::Id> {
         let ident = self.try_as_inner()?;
@@ -440,7 +451,7 @@ impl Node<Option<cst::Ident>> {
     }
 }
 
-impl ast::Id {
+impl ast::UnreservedId {
     fn to_meth(&self, e: ast::Expr, mut args: Vec<ast::Expr>, loc: &Loc) -> Result<ast::Expr> {
         match self.as_ref() {
             "contains" => extract_single_argument(args.into_iter(), "contains", loc)
@@ -449,22 +460,22 @@ impl ast::Id {
                 .map(|arg| construct_method_contains_all(e, arg, loc.clone())),
             "containsAny" => extract_single_argument(args.into_iter(), "containsAny", loc)
                 .map(|arg| construct_method_contains_any(e, arg, loc.clone())),
-            id => {
-                if EXTENSION_STYLES.methods.contains(&id) {
+            _ => {
+                if EXTENSION_STYLES.methods.contains(self) {
                     args.insert(0, e);
                     // INVARIANT (MethodStyleArgs), we call insert above, so args is non-empty
-                    Ok(construct_ext_meth(id.to_string(), args, loc.clone()))
+                    Ok(construct_ext_meth(self.clone(), args, loc.clone()))
                 } else {
                     let unqual_name = ast::Name::unqualified_name(self.clone());
                     if EXTENSION_STYLES.functions.contains(&unqual_name) {
                         Err(ToASTError::new(
-                            ToASTErrorKind::MethodCallOnFunction(unqual_name.id),
+                            ToASTErrorKind::MethodCallOnFunction(unqual_name.basename()),
                             loc.clone(),
                         )
                         .into())
                     } else {
                         Err(ToASTError::new(
-                            ToASTErrorKind::UnknownMethod(id.to_string()),
+                            ToASTErrorKind::UnknownMethod(self.clone()),
                             loc.clone(),
                         )
                         .into())
@@ -800,8 +811,14 @@ impl ExprOrSpecial<'_> {
             Self::StrLit { lit, .. } => Err(self
                 .to_ast_err(ToASTErrorKind::InvalidIsType(lit.to_string()))
                 .into()),
-            Self::Var { var, .. } => Ok(ast::Name::unqualified_name(var.into())),
-            Self::Name { name, .. } => Ok(name),
+            Self::Var { var, .. } => {
+                // PANIC SAFETY: vars are valid unreserved names
+                #[allow(clippy::unwrap_used)]
+                Ok(ast::UncheckedName::unqualified_name(var.into())
+                    .try_into()
+                    .unwrap())
+            }
+            Self::Name { ref name, .. } => Ok(name.clone()),
             Self::Expr { ref expr, .. } => Err(self
                 .to_ast_err(ToASTErrorKind::InvalidIsType(expr.to_string()))
                 .into()),
@@ -810,33 +827,6 @@ impl ExprOrSpecial<'_> {
 }
 
 impl Node<Option<cst::Expr>> {
-    fn to_ref(&self, var: ast::Var) -> Result<EntityUID> {
-        self.to_ref_or_refs::<SingleEntity>(var).map(|x| x.0)
-    }
-
-    fn to_ref_or_slot(&self, var: ast::Var) -> Result<EntityReference> {
-        self.to_ref_or_refs::<EntityReference>(var)
-    }
-
-    fn to_refs(&self, var: ast::Var) -> Result<OneOrMultipleRefs> {
-        self.to_ref_or_refs::<OneOrMultipleRefs>(var)
-    }
-
-    fn to_ref_or_refs<T: RefKind>(&self, var: ast::Var) -> Result<T> {
-        let expr = self.try_as_inner()?;
-
-        match &*expr.expr {
-            cst::ExprData::Or(o) => o.to_ref_or_refs::<T>(var),
-            cst::ExprData::If(_, _, _) => Err(self
-                .to_ast_err(ToASTErrorKind::wrong_node(
-                    T::err_str(),
-                    "an `if` expression",
-                    None::<String>,
-                ))
-                .into()),
-        }
-    }
-
     /// convert `cst::Expr` to `ast::Expr`
     pub fn to_expr(&self) -> Result<ast::Expr> {
         self.to_expr_or_special()?.into_expr()
@@ -861,111 +851,6 @@ impl Node<Option<cst::Expr>> {
     }
 }
 
-/// Type level marker for parsing sets of entity uids or single uids
-/// This presents having either a large level of code duplication
-/// or runtime data.
-/// This marker is (currently) only used for translating entity references
-/// in the policy scope.
-trait RefKind: Sized {
-    fn err_str() -> &'static str;
-    fn create_single_ref(e: EntityUID, loc: &Loc) -> Result<Self>;
-    fn create_multiple_refs(es: Vec<EntityUID>, loc: &Loc) -> Result<Self>;
-    fn create_slot(loc: &Loc) -> Result<Self>;
-}
-
-struct SingleEntity(pub EntityUID);
-
-impl RefKind for SingleEntity {
-    fn err_str() -> &'static str {
-        "an entity uid"
-    }
-
-    fn create_single_ref(e: EntityUID, _loc: &Loc) -> Result<Self> {
-        Ok(SingleEntity(e))
-    }
-
-    fn create_multiple_refs(_es: Vec<EntityUID>, loc: &Loc) -> Result<Self> {
-        Err(ToASTError::new(
-            ToASTErrorKind::wrong_entity_argument_one_expected(
-                err::parse_errors::Ref::Single,
-                err::parse_errors::Ref::Set,
-            ),
-            loc.clone(),
-        )
-        .into())
-    }
-
-    fn create_slot(loc: &Loc) -> Result<Self> {
-        Err(ToASTError::new(
-            ToASTErrorKind::wrong_entity_argument_one_expected(
-                err::parse_errors::Ref::Single,
-                err::parse_errors::Ref::Template,
-            ),
-            loc.clone(),
-        )
-        .into())
-    }
-}
-
-impl RefKind for EntityReference {
-    fn err_str() -> &'static str {
-        "an entity uid or matching template slot"
-    }
-
-    fn create_slot(_loc: &Loc) -> Result<Self> {
-        Ok(EntityReference::Slot)
-    }
-
-    fn create_single_ref(e: EntityUID, _loc: &Loc) -> Result<Self> {
-        Ok(EntityReference::euid(Arc::new(e)))
-    }
-
-    fn create_multiple_refs(_es: Vec<EntityUID>, loc: &Loc) -> Result<Self> {
-        Err(ToASTError::new(
-            ToASTErrorKind::wrong_entity_argument_two_expected(
-                err::parse_errors::Ref::Single,
-                err::parse_errors::Ref::Template,
-                err::parse_errors::Ref::Set,
-            ),
-            loc.clone(),
-        )
-        .into())
-    }
-}
-
-/// Simple utility enum for parsing lists/individual entityuids
-#[derive(Debug)]
-enum OneOrMultipleRefs {
-    Single(EntityUID),
-    Multiple(Vec<EntityUID>),
-}
-
-impl RefKind for OneOrMultipleRefs {
-    fn err_str() -> &'static str {
-        "an entity uid or set of entity uids"
-    }
-
-    fn create_slot(loc: &Loc) -> Result<Self> {
-        Err(ToASTError::new(
-            ToASTErrorKind::wrong_entity_argument_two_expected(
-                err::parse_errors::Ref::Single,
-                err::parse_errors::Ref::Set,
-                err::parse_errors::Ref::Template,
-            ),
-            loc.clone(),
-        )
-        .into())
-    }
-
-    fn create_single_ref(e: EntityUID, _loc: &Loc) -> Result<Self> {
-        Ok(OneOrMultipleRefs::Single(e))
-    }
-
-    fn create_multiple_refs(es: Vec<EntityUID>, _loc: &Loc) -> Result<Self> {
-        Ok(OneOrMultipleRefs::Multiple(es))
-    }
-}
-
 impl Node<Option<cst::Or>> {
     fn to_expr_or_special(&self) -> Result<ExprOrSpecial<'_>> {
         let or = self.try_as_inner()?;
@@ -984,39 +869,9 @@ impl Node<Option<cst::Or>> {
             }),
         }
     }
-
-    fn to_ref_or_refs<T: RefKind>(&self, var: ast::Var) -> Result<T> {
-        let or = self.try_as_inner()?;
-
-        match or.extended.len() {
-            0 => or.initial.to_ref_or_refs::<T>(var),
-            _n => Err(self
-                .to_ast_err(ToASTErrorKind::wrong_node(
-                    T::err_str(),
-                    "a `||` expression",
-                    None::<String>,
-                ))
-                .into()),
-        }
-    }
 }
 
 impl Node<Option<cst::And>> {
-    fn to_ref_or_refs<T: RefKind>(&self, var: ast::Var) -> Result<T> {
-        let and = self.try_as_inner()?;
-
-        match and.extended.len() {
-            0 => and.initial.to_ref_or_refs::<T>(var),
-            _n => Err(self
-                .to_ast_err(ToASTErrorKind::wrong_node(
-                    T::err_str(),
-                    "a `&&` expression",
-                    None::<String>,
-                ))
-                .into()),
-        }
-    }
-
     fn to_expr(&self) -> Result<ast::Expr> {
         self.to_expr_or_special()?.into_expr()
     }
@@ -1040,44 +895,6 @@ impl Node<Option<cst::And>> {
 }
 
 impl Node<Option<cst::Relation>> {
-    fn to_ref_or_refs<T: RefKind>(&self, var: ast::Var) -> Result<T> {
-        let rel = self.try_as_inner()?;
-
-        match rel {
-            cst::Relation::Common { initial, extended } => match extended.len() {
-                0 => initial.to_ref_or_refs::<T>(var),
-                _n => Err(self
-                    .to_ast_err(ToASTErrorKind::wrong_node(
-                        T::err_str(),
-                        "a binary operator",
-                        None::<String>,
-                    ))
-                    .into()),
-            },
-            cst::Relation::Has { .. } => Err(self
-                .to_ast_err(ToASTErrorKind::wrong_node(
-                    T::err_str(),
-                    "a `has` expression",
-                    None::<String>,
-                ))
-                .into()),
-            cst::Relation::Like { .. } => Err(self
-                .to_ast_err(ToASTErrorKind::wrong_node(
-                    T::err_str(),
-                    "a `like` expression",
-                    None::<String>,
-                ))
-                .into()),
-            cst::Relation::IsIn { .. } => Err(self
-                .to_ast_err(ToASTErrorKind::wrong_node(
-                    T::err_str(),
-                    "an `is` expression",
-                    None::<String>,
-                ))
-                .into()),
-        }
-    }
-
     fn to_expr(&self) -> Result<ast::Expr> {
         self.to_expr_or_special()?.into_expr()
     }
@@ -1158,17 +975,6 @@ impl Node<Option<cst::Relation>> {
 }
 
 impl Node<Option<cst::Add>> {
-    fn to_ref_or_refs<T: RefKind>(&self, var: ast::Var) -> Result<T> {
-        let add = self.try_as_inner()?;
-
-        match add.extended.len() {
-            0 => add.initial.to_ref_or_refs::<T>(var),
-            _n => {
-                Err(self.to_ast_err(ToASTErrorKind::wrong_node(T::err_str(), "a `+/-` expression", Some("entity types and namespaces cannot use `+` or `-` characters -- perhaps try `_` or `::` instead?"))).into())
-            }
-        }
-    }
-
     fn to_expr(&self) -> Result<ast::Expr> {
         self.to_expr_or_special()?.into_expr()
     }
@@ -1196,21 +1002,6 @@ impl Node<Option<cst::Add>> {
 }
 
 impl Node<Option<cst::Mult>> {
-    fn to_ref_or_refs<T: RefKind>(&self, var: ast::Var) -> Result<T> {
-        let mult = self.try_as_inner()?;
-
-        match mult.extended.len() {
-            0 => mult.initial.to_ref_or_refs::<T>(var),
-            _n => Err(self
-                .to_ast_err(ToASTErrorKind::wrong_node(
-                    T::err_str(),
-                    "a `*` expression",
-                    None::<String>,
-                ))
-                .into()),
-        }
-    }
-
     fn to_expr(&self) -> Result<ast::Expr> {
         self.to_expr_or_special()?.into_expr()
     }
@@ -1243,21 +1034,6 @@ impl Node<Option<cst::Mult>> {
 }
 
 impl Node<Option<cst::Unary>> {
-    fn to_ref_or_refs<T: RefKind>(&self, var: ast::Var) -> Result<T> {
-        let unary = self.try_as_inner()?;
-
-        match &unary.op {
-            Some(op) => Err(self
-                .to_ast_err(ToASTErrorKind::wrong_node(
-                    T::err_str(),
-                    format!("a `{op}` expression"),
-                    None::<String>,
-                ))
-                .into()),
-            None => unary.item.to_ref_or_refs::<T>(var),
-        }
-    }
-
     fn to_expr(&self) -> Result<ast::Expr> {
         self.to_expr_or_special()?.into_expr()
     }
@@ -1330,7 +1106,7 @@ impl Node<Option<cst::Unary>> {
 
 /// Temporary converted data, mirroring `cst::MemAccess`
 enum AstAccessor {
-    Field(ast::Id),
+    Field(ast::UnreservedId),
     Call(Vec<ast::Expr>),
     Index(SmolStr),
 }
@@ -1348,17 +1124,6 @@ impl Node<Option<cst::Member>> {
         match m.item.as_ref().node.as_ref()? {
             cst::Primary::Literal(lit) => lit.as_ref().node.as_ref(),
             _ => None,
-        }
-    }
-
-    fn to_ref_or_refs<T: RefKind>(&self, var: ast::Var) -> Result<T> {
-        let mem = self.try_as_inner()?;
-
-        match mem.access.len() {
-            0 => mem.item.to_ref_or_refs::<T>(var),
-            _n => {
-                Err(self.to_ast_err(ToASTErrorKind::wrong_node(T::err_str(), "a `.` expression", Some("entity types and namespaces cannot use `.` characters -- perhaps try `_` or `::` instead?"))).into())
-            }
         }
     }
 
@@ -1394,7 +1159,7 @@ impl Node<Option<cst::Member>> {
                     // replace the object `name` refers to with a default value since it won't be used afterwards
                     let nn = mem::replace(
                         name,
-                        ast::Name::unqualified_name(ast::Id::new_unchecked("")),
+                        ast::Name::unqualified_name(ast::UnreservedId::empty()),
                     );
                     head = nn.into_func(args, self.loc.clone()).map(|expr| Expr {
                         expr,
@@ -1422,7 +1187,8 @@ impl Node<Option<cst::Member>> {
                     let var = mem::replace(var, ast::Var::Principal);
                     let args = std::mem::take(a);
                     // move the id out of the slice as well, to avoid cloning the internal string
-                    let id = mem::replace(i, ast::Id::new_unchecked(""));
+                    let id = mem::replace(i, ast::UnreservedId::empty());
+
                     head = id
                         .to_meth(construct_expr_var(var, var_loc.clone()), args, &self.loc)
                         .map(|expr| Expr {
@@ -1437,7 +1203,7 @@ impl Node<Option<cst::Member>> {
                     let args = std::mem::take(a);
                     let expr = mem::replace(expr, ast::Expr::val(false));
                     // move the id out of the slice as well, to avoid cloning the internal string
-                    let id = mem::replace(i, ast::Id::new_unchecked(""));
+                    let id = mem::replace(i, ast::UnreservedId::empty());
                     head = id.to_meth(expr, args, &self.loc).map(|expr| Expr {
                         expr,
                         loc: self.loc.clone(),
@@ -1447,7 +1213,7 @@ impl Node<Option<cst::Member>> {
                 // method call on string literal (same as Expr case)
                 (StrLit { lit, loc: lit_loc }, [Field(i), Call(a), rest @ ..]) => {
                     let args = std::mem::take(a);
-                    let id = mem::replace(i, ast::Id::new_unchecked(""));
+                    let id = mem::replace(i, ast::UnreservedId::empty());
                     let maybe_expr = match to_unescaped_string(lit) {
                         Ok(s) => Ok(construct_expr_string(s, lit_loc.clone())),
                         Err(escape_errs) => {
@@ -1481,11 +1247,11 @@ impl Node<Option<cst::Member>> {
                 // attribute of variable
                 (Var { var, loc: var_loc }, [Field(i), rest @ ..]) => {
                     let var = mem::replace(var, ast::Var::Principal);
-                    let id = mem::replace(i, ast::Id::new_unchecked(""));
+                    let id = mem::replace(i, ast::UnreservedId::empty());
                     head = Expr {
                         expr: construct_expr_attr(
                             construct_expr_var(var, var_loc.clone()),
-                            id.into_smolstr(),
+                            id.as_ref().into(),
                             self.loc.clone(),
                         ),
                         loc: self.loc.clone(),
@@ -1495,16 +1261,16 @@ impl Node<Option<cst::Member>> {
                 // field of arbitrary expr
                 (Expr { expr, .. }, [Field(i), rest @ ..]) => {
                     let expr = mem::replace(expr, ast::Expr::val(false));
-                    let id = mem::replace(i, ast::Id::new_unchecked(""));
+                    let id = mem::replace(i, ast::UnreservedId::empty());
                     head = Expr {
-                        expr: construct_expr_attr(expr, id.into_smolstr(), self.loc.clone()),
+                        expr: construct_expr_attr(expr, id.as_ref().into(), self.loc.clone()),
                         loc: self.loc.clone(),
                     };
                     tail = rest;
                 }
                 // field of string literal (same as Expr case)
                 (StrLit { lit, loc: lit_loc }, [Field(i), rest @ ..]) => {
-                    let id = mem::replace(i, ast::Id::new_unchecked(""));
+                    let id = mem::replace(i, ast::UnreservedId::empty());
                     let maybe_expr = match to_unescaped_string(lit) {
                         Ok(s) => Ok(construct_expr_string(s, lit_loc.clone())),
                         Err(escape_errs) => {
@@ -1514,7 +1280,7 @@ impl Node<Option<cst::Member>> {
                         }
                     };
                     head = maybe_expr.map(|e| Expr {
-                        expr: construct_expr_attr(e, id.into_smolstr(), self.loc.clone()),
+                        expr: construct_expr_attr(e, id.as_ref().into(), self.loc.clone()),
                         loc: self.loc.clone(),
                     })?;
                     tail = rest;
@@ -1571,7 +1337,7 @@ impl Node<Option<cst::MemAccess>> {
 
         match acc {
             cst::MemAccess::Field(i) => {
-                let maybe_ident = i.to_valid_ident();
+                let maybe_ident = i.to_unreserved_ident();
                 maybe_ident.map(AstAccessor::Field)
             }
             cst::MemAccess::Call(args) => {
@@ -1587,72 +1353,6 @@ impl Node<Option<cst::MemAccess>> {
 }
 
 impl Node<Option<cst::Primary>> {
-    fn to_ref_or_refs<T: RefKind>(&self, var: ast::Var) -> Result<T> {
-        let prim = self.try_as_inner()?;
-
-        match prim {
-            cst::Primary::Slot(s) => {
-                // Call `create_slot` first so that we fail immediately if the
-                // `RefKind` does not permit slots, and only then complain if
-                // it's the wrong slot. This avoids getting an error
-                // `found ?action instead of ?action` when `action` doesn't
-                // support slots.
-                let slot_ref = T::create_slot(&self.loc)?;
-                let slot = s.try_as_inner()?;
-                if slot.matches(var) {
-                    Ok(slot_ref)
-                } else {
-                    Err(self
-                        .to_ast_err(ToASTErrorKind::wrong_node(
-                            T::err_str(),
-                            format!("{slot} instead of ?{var}"),
-                            None::<String>,
-                        ))
-                        .into())
-                }
-            }
-            cst::Primary::Literal(lit) => {
-                let found = match lit.as_inner() {
-                    Some(lit) => format!("literal `{lit}`"),
-                    None => "empty node".to_string(),
-                };
-                Err(self
-                    .to_ast_err(ToASTErrorKind::wrong_node(
-                        T::err_str(),
-                        found,
-                        None::<String>,
-                    ))
-                    .into())
-            }
-            cst::Primary::Ref(x) => T::create_single_ref(x.to_ref()?, &self.loc),
-            cst::Primary::Name(name) => {
-                let found = match name.as_inner() {
-                    Some(name) => format!("name `{name}`"),
-                    None => "name".to_string(),
-                };
-                Err(self
-                    .to_ast_err(ToASTErrorKind::wrong_node(
-                        T::err_str(),
-                        found,
-                        None::<String>,
-                    ))
-                    .into())
-            }
-            cst::Primary::Expr(x) => x.to_ref_or_refs::<T>(var),
-            cst::Primary::EList(lst) => {
-                let v = ParseErrors::transpose(lst.iter().map(|expr| expr.to_ref(var)))?;
-                T::create_multiple_refs(v, &self.loc)
-            }
-            cst::Primary::RInits(_) => Err(self
-                .to_ast_err(ToASTErrorKind::wrong_node(
-                    T::err_str(),
-                    "record initializer",
-                    None::<String>,
-                ))
-                .into()),
-        }
-    }
-
     pub(crate) fn to_expr(&self) -> Result<ast::Expr> {
         self.to_expr_or_special()?.into_expr()
     }
@@ -1678,10 +1378,14 @@ impl Node<Option<cst::Primary>> {
                         loc: self.loc.clone(),
                     })
                 } else {
-                    n.to_name().map(|name| ExprOrSpecial::Name {
-                        name,
-                        loc: self.loc.clone(),
-                    })
+                    n.to_unchecked_name()
+                        .and_then(|name| match name.try_into() {
+                            Ok(name) => Ok(ExprOrSpecial::Name {
+                                name,
+                                loc: self.loc.clone(),
+                            }),
+                            Err(err) => Err(ParseErrors::singleton(err)),
+                        })
                 }
             }
             cst::Primary::Expr(e) => e.to_expr().map(|expr| ExprOrSpecial::Expr {
@@ -1761,6 +1465,11 @@ impl Node<Option<cst::Name>> {
     }
 
     pub(crate) fn to_name(&self) -> Result<ast::Name> {
+        self.to_unchecked_name()
+            .and_then(|n| n.try_into().map_err(ParseErrors::singleton))
+    }
+
+    pub(crate) fn to_unchecked_name(&self) -> Result<ast::UncheckedName> {
         let name = self.try_as_inner()?;
 
         let maybe_path = ParseErrors::transpose(name.path.iter().map(|i| i.to_valid_ident()));
@@ -1801,29 +1510,31 @@ impl Node<Option<cst::Name>> {
 impl ast::Name {
     /// Convert the `Name` into a `String` attribute, which fails if it had any namespaces
     fn into_valid_attr(self, loc: Loc) -> Result<SmolStr> {
-        if !self.path.is_empty() {
+        if !self.0.path.is_empty() {
             Err(ToASTError::new(ToASTErrorKind::PathAsAttribute(self.to_string()), loc).into())
         } else {
-            Ok(self.id.into_smolstr())
+            Ok(self.0.id.into_smolstr())
         }
     }
 
     /// If this name is a known extension function/method name or not
     pub(crate) fn is_known_extension_func_name(&self) -> bool {
         EXTENSION_STYLES.functions.contains(self)
-            || (self.path.is_empty() && EXTENSION_STYLES.methods.contains(self.id.as_ref()))
+            || (self.0.path.is_empty() && EXTENSION_STYLES.methods.contains(&self.basename()))
     }
 
     fn into_func(self, args: Vec<ast::Expr>, loc: Loc) -> Result<ast::Expr> {
         // error on standard methods
-        if self.path.is_empty() {
-            let id = self.id.as_ref();
-            if EXTENSION_STYLES.methods.contains(id)
-                || matches!(id, "contains" | "containsAll" | "containsAny")
+        if self.0.path.is_empty() {
+            let id = self.basename();
+            if EXTENSION_STYLES.methods.contains(&id)
+                || matches!(id.as_ref(), "contains" | "containsAll" | "containsAny")
             {
-                return Err(
-                    ToASTError::new(ToASTErrorKind::FunctionCallOnMethod(self.id), loc).into(),
-                );
+                return Err(ToASTError::new(
+                    ToASTErrorKind::FunctionCallOnMethod(self.basename()),
+                    loc,
+                )
+                .into());
             }
         }
         if EXTENSION_STYLES.functions.contains(&self) {
@@ -1955,16 +1666,15 @@ fn construct_string_from_var(v: ast::Var) -> SmolStr {
         ast::Var::Context => "context".into(),
     }
 }
-fn construct_name(path: Vec<ast::Id>, id: ast::Id, loc: Loc) -> ast::Name {
-    ast::Name {
+fn construct_name(path: Vec<ast::Id>, id: ast::Id, loc: Loc) -> ast::UncheckedName {
+    ast::UncheckedName {
         id,
         path: Arc::new(path),
         loc: Some(loc),
     }
 }
 fn construct_refr(p: ast::EntityType, n: SmolStr, loc: Loc) -> ast::EntityUID {
-    let eid = ast::Eid::new(n);
-    ast::EntityUID::from_components(p, eid, Some(loc))
+    ast::EntityUID::from_components(p, ast::Eid::new(n), Some(loc))
 }
 fn construct_expr_ref(r: ast::EntityUID, loc: Loc) -> ast::Expr {
     ast::ExprBuilder::new().with_source_loc(loc).val(r)
@@ -2103,9 +1813,8 @@ fn construct_method_contains_any(e0: ast::Expr, e1: ast::Expr, loc: Loc) -> ast:
 }
 
 // INVARIANT (MethodStyleArgs), args must be non-empty
-fn construct_ext_meth(n: String, args: Vec<ast::Expr>, loc: Loc) -> ast::Expr {
-    let id = ast::Id::new_unchecked(n);
-    let name = ast::Name::unqualified_name(id);
+fn construct_ext_meth(n: UnreservedId, args: Vec<ast::Expr>, loc: Loc) -> ast::Expr {
+    let name = ast::Name::unqualified_name(n);
     // INVARIANT (MethodStyleArgs), args must be non-empty
     ast::ExprBuilder::new()
         .with_source_loc(loc)
@@ -2129,10 +1838,11 @@ fn construct_expr_record(kvs: Vec<(SmolStr, ast::Expr)>, loc: Loc) -> Result<ast
 mod tests {
     use super::*;
     use crate::{
-        ast::Expr,
+        ast::{EntityUID, Expr},
         parser::{err::ParseErrors, test_utils::*, *},
         test_utils::*,
     };
+    use ast::{ReservedNameError, UncheckedName};
     use cool_asserts::assert_matches;
 
     #[track_caller]
@@ -3049,7 +2759,7 @@ mod tests {
     #[test]
     fn issue_wf_5046() {
         let policy = parse_policy(
-            Some("WF-5046".into()),
+            Some(ast::PolicyID::from_string("WF-5046")),
             r#"permit(
             principal,
             action in [Action::"action"],
@@ -3930,7 +3640,11 @@ mod tests {
                 r#"permit(principal is User in User, action, resource);"#,
                 ExpectedErrorMessageBuilder::error(
                     "expected an entity uid or matching template slot, found name `User`",
-                ).exactly_one_underline("User").build(),
+                )
+                .help(
+                    "try using `is` to test for an entity type or including an identifier string if you intended this name to be an entity uid"
+                )
+                .exactly_one_underline("User").build(),
             ),
             (
                 r#"permit(principal is User::"Alice" in Group::"f", action, resource);"#,
@@ -3944,7 +3658,11 @@ mod tests {
                 r#"permit(principal, action, resource is File in File);"#,
                 ExpectedErrorMessageBuilder::error(
                     "expected an entity uid or matching template slot, found name `File`",
-                ).exactly_one_underline("File").build(),
+                )
+                .help(
+                    "try using `is` to test for an entity type or including an identifier string if you intended this name to be an entity uid"
+                )
+                .exactly_one_underline("File").build(),
             ),
             (
                 r#"permit(principal, action, resource is File::"file" in Folder::"folder");"#,
@@ -4502,11 +4220,162 @@ mod tests {
     }
 
     #[test]
+    fn scope_compare_to_string() {
+        let p_src = r#"permit(principal == "alice", action, resource);"#;
+        assert_matches!(parse_policy_template(None, p_src), Err(e) => {
+            expect_err(p_src, &miette::Report::new(e), &ExpectedErrorMessageBuilder::error(
+                r#"expected an entity uid or matching template slot, found literal `"alice"`"#
+            ).help(
+                "try including the entity type if you intended this string to be an entity uid"
+            ).exactly_one_underline(r#""alice""#).build());
+        });
+        let p_src = r#"permit(principal in "bob_friends", action, resource);"#;
+        assert_matches!(parse_policy_template(None, p_src), Err(e) => {
+            expect_err(p_src, &miette::Report::new(e), &ExpectedErrorMessageBuilder::error(
+                r#"expected an entity uid or matching template slot, found literal `"bob_friends"`"#
+            ).help(
+                "try including the entity type if you intended this string to be an entity uid"
+            ).exactly_one_underline(r#""bob_friends""#).build());
+        });
+        let p_src = r#"permit(principal, action, resource in "jane_photos");"#;
+        assert_matches!(parse_policy_template(None, p_src), Err(e) => {
+            expect_err(p_src, &miette::Report::new(e), &ExpectedErrorMessageBuilder::error(
+                r#"expected an entity uid or matching template slot, found literal `"jane_photos"`"#
+            ).help(
+                "try including the entity type if you intended this string to be an entity uid"
+            ).exactly_one_underline(r#""jane_photos""#).build());
+        });
+        let p_src = r#"permit(principal, action in ["view_actions"], resource);"#;
+        assert_matches!(parse_policy_template(None, p_src), Err(e) => {
+            expect_err(p_src, &miette::Report::new(e), &ExpectedErrorMessageBuilder::error(
+                r#"expected an entity uid, found literal `"view_actions"`"#
+            ).help(
+                "try including the entity type if you intended this string to be an entity uid"
+            ).exactly_one_underline(r#""view_actions""#).build());
+        });
+    }
+
+    #[test]
+    fn scope_compare_to_name() {
+        let p_src = r#"permit(principal == User, action, resource);"#;
+        assert_matches!(parse_policy_template(None, p_src), Err(e) => {
+            expect_err(p_src, &miette::Report::new(e), &ExpectedErrorMessageBuilder::error(
+                "expected an entity uid or matching template slot, found name `User`"
+            ).help(
+                    "try using `is` to test for an entity type or including an identifier string if you intended this name to be an entity uid"
+            ).exactly_one_underline("User").build());
+        });
+        let p_src = r#"permit(principal in Group, action, resource);"#;
+        assert_matches!(parse_policy_template(None, p_src), Err(e) => {
+            expect_err(p_src, &miette::Report::new(e), &ExpectedErrorMessageBuilder::error(
+                "expected an entity uid or matching template slot, found name `Group`"
+            ).help(
+                "try using `is` to test for an entity type or including an identifier string if you intended this name to be an entity uid"
+            ).exactly_one_underline("Group").build());
+        });
+        let p_src = r#"permit(principal, action, resource in Album);"#;
+        assert_matches!(parse_policy_template(None, p_src), Err(e) => {
+            expect_err(p_src, &miette::Report::new(e), &ExpectedErrorMessageBuilder::error(
+                "expected an entity uid or matching template slot, found name `Album`"
+            ).help(
+                "try using `is` to test for an entity type or including an identifier string if you intended this name to be an entity uid"
+            ).exactly_one_underline("Album").build());
+        });
+        let p_src = r#"permit(principal, action == Action, resource);"#;
+        assert_matches!(parse_policy_template(None, p_src), Err(e) => {
+            expect_err(p_src, &miette::Report::new(e), &ExpectedErrorMessageBuilder::error(
+                "expected an entity uid, found name `Action`"
+            ).help(
+                "try including an identifier string if you intended this name to be an entity uid"
+            ).exactly_one_underline("Action").build());
+        });
+    }
+
+    #[test]
+    fn scope_and() {
+        let p_src = r#"permit(principal == User::"alice" && principal in Group::"jane_friends", action, resource);"#;
+        assert_matches!(parse_policy_template(None, p_src), Err(e) => {
+            expect_err(p_src, &miette::Report::new(e), &ExpectedErrorMessageBuilder::error(
+                "expected an entity uid or matching template slot, found a `&&` expression"
+            ).help(
+                "the policy scope can only contain one constraint per variable. Consider moving the second operand of this `&&` into a `when` condition",
+            ).exactly_one_underline(r#"User::"alice" && principal in Group::"jane_friends""#).build());
+        });
+    }
+
+    #[test]
+    fn scope_or() {
+        let p_src =
+            r#"permit(principal == User::"alice" || principal == User::"bob", action, resource);"#;
+        assert_matches!(parse_policy_template(None, p_src), Err(e) => {
+            expect_err(p_src, &miette::Report::new(e), &ExpectedErrorMessageBuilder::error(
+                "expected an entity uid or matching template slot, found a `||` expression"
+            ).help(
+                "the policy scope can only contain one constraint per variable. Consider moving the second operand of this `||` into a new policy",
+            ).exactly_one_underline(r#"User::"alice" || principal == User::"bob""#).build());
+        });
+    }
+
+    #[test]
     fn scope_action_in_set_set() {
         let p_src = r#"permit(principal, action in [[Action::"view"]], resource);"#;
         assert_matches!(parse_policy_template(None, p_src), Err(e) => {
             expect_err(p_src, &miette::Report::new(e), &ExpectedErrorMessageBuilder::error("expected single entity uid, found set of entity uids").exactly_one_underline(r#"[Action::"view"]"#).build());
         });
+    }
+
+    #[test]
+    fn scope_unexpected_nested_sets() {
+        let policy = r#"
+            permit (
+                principal == [[User::"alice"]],
+                action,
+                resource
+            );
+        "#;
+        assert_matches!(
+            parse_policy(None, policy),
+            Err(e) => {
+                expect_n_errors(policy, &e, 1);
+                expect_some_error_matches(policy, &e, &ExpectedErrorMessageBuilder::error(
+                    "expected single entity uid or template slot, found set of entity uids",
+                ).exactly_one_underline(r#"[[User::"alice"]]"#).build());
+            }
+        );
+
+        let policy = r#"
+            permit (
+                principal,
+                action,
+                resource == [[?resource]]
+            );
+        "#;
+        assert_matches!(
+            parse_policy(None, policy),
+            Err(e) => {
+                expect_n_errors(policy, &e, 1);
+                expect_some_error_matches(policy, &e, &ExpectedErrorMessageBuilder::error(
+                    "expected single entity uid or template slot, found set of entity uids",
+                ).exactly_one_underline("[[?resource]]").build());
+            }
+        );
+
+        let policy = r#"
+            permit (
+                principal,
+                action in [[[Action::"act"]]],
+                resource
+            );
+        "#;
+        assert_matches!(
+            parse_policy(None, policy),
+            Err(e) => {
+                expect_n_errors(policy, &e, 1);
+                expect_some_error_matches(policy, &e, &ExpectedErrorMessageBuilder::error(
+                    "expected single entity uid, found set of entity uids",
+                ).exactly_one_underline(r#"[[Action::"act"]]"#).build());
+            }
+        );
     }
 
     #[test]
@@ -4643,6 +4512,54 @@ mod tests {
         expect_reserved_ident("false::bar::principal", "false");
         expect_reserved_ident("foo::in::principal", "in");
         expect_reserved_ident("foo::is::bar::principal", "is");
+    }
+
+    #[test]
+    fn reserved_namespace() {
+        assert_matches!(parse_expr(r#"__cedar::"""#),
+            Err(errs) if matches!(errs.as_ref().first(),
+                ParseError::ToAST(to_ast_err) if matches!(to_ast_err.kind(),
+                    ToASTErrorKind::ReservedNamespace(ReservedNameError(n)) if *n == "__cedar".parse::<UncheckedName>().unwrap())));
+        assert_matches!(parse_expr(r#"__cedar::A::"""#),
+            Err(errs) if matches!(errs.as_ref().first(),
+                ParseError::ToAST(to_ast_err) if matches!(to_ast_err.kind(),
+                    ToASTErrorKind::ReservedNamespace(ReservedNameError(n)) if *n == "__cedar::A".parse::<UncheckedName>().unwrap())));
+        assert_matches!(parse_expr(r#"A::__cedar::B::"""#),
+            Err(errs) if matches!(errs.as_ref().first(),
+                ParseError::ToAST(to_ast_err) if matches!(to_ast_err.kind(),
+                    ToASTErrorKind::ReservedNamespace(ReservedNameError(n)) if *n == "A::__cedar::B".parse::<UncheckedName>().unwrap())));
+        assert_matches!(parse_expr(r#"[A::"", __cedar::Action::"action"]"#),
+            Err(errs) if matches!(errs.as_ref().first(),
+                ParseError::ToAST(to_ast_err) if matches!(to_ast_err.kind(),
+                    ToASTErrorKind::ReservedNamespace(ReservedNameError(n)) if *n == "__cedar::Action".parse::<UncheckedName>().unwrap())));
+        assert_matches!(parse_expr(r#"principal is __cedar::A"#),
+            Err(errs) if matches!(errs.as_ref().first(),
+                ParseError::ToAST(to_ast_err) if matches!(to_ast_err.kind(),
+                    ToASTErrorKind::ReservedNamespace(ReservedNameError(n)) if *n == "__cedar::A".parse::<UncheckedName>().unwrap())));
+        assert_matches!(parse_expr(r#"__cedar::decimal("0.0")"#),
+            Err(errs) if matches!(errs.as_ref().first(),
+                ParseError::ToAST(to_ast_err) if matches!(to_ast_err.kind(),
+                    ToASTErrorKind::ReservedNamespace(ReservedNameError(n)) if *n == "__cedar::decimal".parse::<UncheckedName>().unwrap())));
+        assert_matches!(parse_expr(r#"ip("").__cedar()"#),
+            Err(errs) if matches!(errs.as_ref().first(),
+                ParseError::ToAST(to_ast_err) if matches!(to_ast_err.kind(),
+                    ToASTErrorKind::ReservedNamespace(ReservedNameError(n)) if *n == "__cedar".parse::<UncheckedName>().unwrap())));
+        assert_matches!(parse_expr(r#"{__cedar: 0}"#),
+            Err(errs) if matches!(errs.as_ref().first(),
+                ParseError::ToAST(to_ast_err) if matches!(to_ast_err.kind(),
+                    ToASTErrorKind::ReservedNamespace(ReservedNameError(n)) if *n == "__cedar".parse::<UncheckedName>().unwrap())));
+        assert_matches!(parse_expr(r#"{a: 0}.__cedar"#),
+            Err(errs) if matches!(errs.as_ref().first(),
+                ParseError::ToAST(to_ast_err) if matches!(to_ast_err.kind(),
+                    ToASTErrorKind::ReservedNamespace(ReservedNameError(n)) if *n == "__cedar".parse::<UncheckedName>().unwrap())));
+        // We allow `__cedar` as an annotation identifier
+        assert_matches!(
+            parse_policy(
+                None,
+                r#"@__cedar("foo") permit(principal, action, resource);"#
+            ),
+            Ok(_)
+        );
     }
 
     #[test]

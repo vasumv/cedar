@@ -18,10 +18,11 @@ use std::fmt::Display;
 
 use super::{HeterogeneousSetError, SchemaType};
 use crate::ast::{
-    BorrowedRestrictedExpr, EntityAttrEvaluationError, EntityUID, Expr, ExprKind, Name,
-    PartialValue, PolicyID, RestrictedExpr, RestrictedExpressionError,
+    BorrowedRestrictedExpr, EntityAttrEvaluationError, EntityUID, Expr, ExprKind, PartialValue,
+    PolicyID, RestrictedExpr, RestrictedExpressionError,
 };
 use crate::entities::conformance::err::EntitySchemaConformanceError;
+use crate::entities::{Name, ReservedNameError};
 use crate::extensions::ExtensionFunctionLookupError;
 use crate::parser::err::ParseErrors;
 use either::Either;
@@ -80,10 +81,10 @@ pub enum JsonDeserializationError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     MissingImpliedConstructor(MissingImpliedConstructor),
-    /// The same key appears two or more times in a single record literal
+    /// The same key appears two or more times in a single record
     #[error(transparent)]
     #[diagnostic(transparent)]
-    DuplicateKeyInRecordLiteral(DuplicateKeyInRecordLiteral),
+    DuplicateKey(DuplicateKey),
     /// Error when evaluating an entity attribute
     #[error(transparent)]
     #[diagnostic(transparent)]
@@ -153,6 +154,10 @@ pub enum JsonDeserializationError {
     /// Raised when the input JSON contains a `null`
     #[error("{0}, found a `null`; JSON `null`s are not allowed in Cedar")]
     Null(Box<JsonDeserializationErrorContext>),
+    /// Returned when a name contains `__cedar`
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    ReservedName(#[from] ReservedNameError),
 }
 
 impl JsonDeserializationError {
@@ -204,11 +209,11 @@ impl JsonDeserializationError {
         })
     }
 
-    pub(crate) fn duplicate_key_in_record_literal(
+    pub(crate) fn duplicate_key(
         ctx: JsonDeserializationErrorContext,
         key: impl Into<SmolStr>,
     ) -> Self {
-        Self::DuplicateKeyInRecordLiteral(DuplicateKeyInRecordLiteral {
+        Self::DuplicateKey(DuplicateKey {
             ctx: Box::new(ctx),
             key: key.into(),
         })
@@ -348,9 +353,9 @@ pub struct UnexpectedRecordAttr {
 }
 
 #[derive(Debug, Error, Diagnostic)]
-#[error("{}, duplicate key `{}` in record literal", .ctx, .key)]
-/// Error type for recordc literals having duplicate keys
-pub struct DuplicateKeyInRecordLiteral {
+#[error("{}, duplicate key `{}` in record", .ctx, .key)]
+/// Error type for records having duplicate keys
+pub struct DuplicateKey {
     /// Context of this error
     ctx: Box<JsonDeserializationErrorContext>,
     /// The key that appeared two or more times

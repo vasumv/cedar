@@ -15,9 +15,10 @@
  */
 
 use crate::ast::{
-    BorrowedRestrictedExpr, EntityType, Expr, ExprKind, Literal, Name, PartialValue, Type, Unknown,
+    BorrowedRestrictedExpr, EntityType, Expr, ExprKind, Literal, PartialValue, Type, Unknown,
     Value, ValueKind,
 };
+use crate::entities::Name;
 use crate::extensions::{
     extension_function_lookup_errors, ExtensionFunctionLookupError, Extensions,
 };
@@ -165,6 +166,22 @@ impl SchemaType {
                     })
                 }
                 _ => false,
+            }
+        }
+    }
+
+    /// Iterate over all extension function types contained in this SchemaType
+    pub fn contained_ext_types(&self) -> Box<dyn Iterator<Item = &Name> + '_> {
+        match self {
+            Self::Extension { name } => Box::new(std::iter::once(name)),
+            Self::Set { element_ty } => element_ty.contained_ext_types(),
+            Self::Record { attrs, .. } => Box::new(
+                attrs
+                    .values()
+                    .flat_map(|ty| ty.attr_type.contained_ext_types()),
+            ),
+            Self::Bool | Self::Long | Self::String | Self::EmptySet | Self::Entity { .. } => {
+                Box::new(std::iter::empty())
             }
         }
     }

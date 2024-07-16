@@ -21,19 +21,11 @@ use smol_str::SmolStr;
 use std::sync::Arc;
 
 use super::{
-    Annotations, AuthorizationError, Authorizer, Decision, Effect, Expr, Policy, PolicySet,
-    PolicySetError, Request, Response, Value,
+    err::{ConcretizationError, ReauthorizationError},
+    Annotations, AuthorizationError, Authorizer, Context, Decision, Effect, EntityUIDEntry, Expr,
+    Policy, PolicySet, PolicySetError, Request, Response, Value,
 };
-use crate::{
-    ast::PolicyID,
-    authorizer::{Context, EntityUIDEntry},
-    entities::Entities,
-    evaluator::EvaluationError,
-};
-
-lazy_static::lazy_static! {
-    static ref DUMMY_REQUEST: Request = Request::new_unchecked(EntityUIDEntry::Unknown { loc: None }, EntityUIDEntry::Unknown { loc: None }, EntityUIDEntry::Unknown { loc: None }, Some(Context::empty()));
-}
+use crate::{ast::PolicyID, entities::Entities, evaluator::EvaluationError};
 
 type PolicyComponents<'a> = (Effect, &'a PolicyID, &'a Arc<Expr>, &'a Arc<Annotations>);
 
@@ -52,7 +44,7 @@ pub enum ErrorState {
 /// Also tracks all the errors that were encountered during evaluation.
 /// This structure currently has to own all of the `PolicyID` objects due to the [`Self::reauthorize`]
 /// method. If [`PolicySet`] could borrow its PolicyID/contents then this whole structured could be borrowed.
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Clone)]
 pub struct PartialResponse {
     /// All of the [`Effect::Permit`] policies that were satisfied
     pub satisfied_permits: HashMap<PolicyID, Arc<Annotations>>,
@@ -72,6 +64,8 @@ pub struct PartialResponse {
     true_expr: Arc<Expr>,
     /// The trivial `false` expression, used for materializing a residual for non-satisfied policies
     false_expr: Arc<Expr>,
+    /// The request associated with the partial response
+    request: Arc<Request>,
 }
 
 impl PartialResponse {
@@ -84,6 +78,7 @@ impl PartialResponse {
         false_forbids: impl IntoIterator<Item = (PolicyID, (ErrorState, Arc<Annotations>))>,
         residual_forbids: impl IntoIterator<Item = (PolicyID, (Arc<Expr>, Arc<Annotations>))>,
         errors: impl IntoIterator<Item = AuthorizationError>,
+        request: Arc<Request>,
     ) -> Self {
         Self {
             satisfied_permits: true_permits.into_iter().collect(),
@@ -95,6 +90,7 @@ impl PartialResponse {
             errors: errors.into_iter().collect(),
             true_expr: Arc::new(Expr::val(true)),
             false_expr: Arc::new(Expr::val(false)),
+            request,
         }
     }
 
@@ -319,9 +315,10 @@ impl PartialResponse {
         mapping: &HashMap<SmolStr, Value>,
         auth: &Authorizer,
         es: &Entities,
-    ) -> Result<Self, PolicySetError> {
+    ) -> Result<Self, ReauthorizationError> {
         let policyset = self.all_policies(mapping)?;
-        Ok(auth.is_authorized_core(DUMMY_REQUEST.to_owned(), &policyset, es))
+        let new_request = self.concretize_request(mapping)?;
+        Ok(auth.is_authorized_core(new_request, &policyset, es))
     }
 
     fn all_policies(&self, mapping: &HashMap<SmolStr, Value>) -> Result<PolicySet, PolicySetError> {
@@ -331,6 +328,118 @@ impl PartialResponse {
                 .chain(self.all_forbid_residuals())
                 .map(mapper),
         )
+    }
+
+    fn concretize_request(
+        &self,
+        mapping: &HashMap<SmolStr, Value>,
+    ) -> Result<Request, ConcretizationError> {
+        let mut principal = self.request.principal.clone();
+        let mut action = self.request.action.clone();
+        let mut resource = self.request.resource.clone();
+        let mut context = self.request.context.clone();
+
+        if let Some((key, val)) = mapping.get_key_value("principal") {
+            if let Ok(uid) = val.get_as_entity() {
+                match self.request.principal() {
+                    EntityUIDEntry::Known { euid, .. } => {
+                        return Err(ConcretizationError::VarConfictError {
+                            id: key.to_owned(),
+                            existing_value: euid.as_ref().clone().into(),
+                            given_value: val.clone(),
+                        });
+                    }
+                    EntityUIDEntry::Unknown { .. } => {
+                        principal = EntityUIDEntry::known(uid.clone(), None);
+                    }
+                }
+            } else {
+                return Err(ConcretizationError::ValueError {
+                    id: key.to_owned(),
+                    expected_type: "entity",
+                    given_value: val.to_owned(),
+                });
+            }
+        }
+
+        if let Some((key, val)) = mapping.get_key_value("action") {
+            if let Ok(uid) = val.get_as_entity() {
+                match self.request.action() {
+                    EntityUIDEntry::Known { euid, .. } => {
+                        return Err(ConcretizationError::VarConfictError {
+                            id: key.to_owned(),
+                            existing_value: euid.as_ref().clone().into(),
+                            given_value: val.clone(),
+                        });
+                    }
+                    EntityUIDEntry::Unknown { .. } => {
+                        action = EntityUIDEntry::known(uid.clone(), None);
+                    }
+                }
+            } else {
+                return Err(ConcretizationError::ValueError {
+                    id: key.to_owned(),
+                    expected_type: "entity",
+                    given_value: val.to_owned(),
+                });
+            }
+        }
+
+        if let Some((key, val)) = mapping.get_key_value("resource") {
+            if let Ok(uid) = val.get_as_entity() {
+                match self.request.resource() {
+                    EntityUIDEntry::Known { euid, .. } => {
+                        return Err(ConcretizationError::VarConfictError {
+                            id: key.to_owned(),
+                            existing_value: euid.as_ref().clone().into(),
+                            given_value: val.clone(),
+                        });
+                    }
+                    EntityUIDEntry::Unknown { .. } => {
+                        resource = EntityUIDEntry::known(uid.clone(), None);
+                    }
+                }
+            } else {
+                return Err(ConcretizationError::ValueError {
+                    id: key.to_owned(),
+                    expected_type: "entity",
+                    given_value: val.to_owned(),
+                });
+            }
+        }
+
+        if let Some((key, val)) = mapping.get_key_value("context") {
+            if let Ok(attrs) = val.get_as_record() {
+                match self.request.context() {
+                    Some(ctx) => {
+                        return Err(ConcretizationError::VarConfictError {
+                            id: key.to_owned(),
+                            existing_value: ctx.clone().into(),
+                            given_value: val.clone(),
+                        });
+                    }
+                    None => context = Some(Context::Value(attrs.clone())),
+                }
+            } else {
+                return Err(ConcretizationError::ValueError {
+                    id: key.to_owned(),
+                    expected_type: "record",
+                    given_value: val.to_owned(),
+                });
+            }
+        }
+
+        // We need to replace unknowns in the partial context as well
+        context = context
+            .map(|context| context.substitute(mapping))
+            .transpose()?;
+
+        Ok(Request {
+            principal,
+            action,
+            resource,
+            context,
+        })
     }
 
     fn errors(self) -> impl Iterator<Item = AuthorizationError> {
@@ -457,7 +566,15 @@ mod test {
         }
     }
 
-    use crate::authorizer::{ActionConstraint, PrincipalConstraint, ResourceConstraint};
+    use crate::{
+        authorizer::{
+            ActionConstraint, EntityUID, PrincipalConstraint, ResourceConstraint, RestrictedExpr,
+            Unknown,
+        },
+        extensions::Extensions,
+        parser::parse_policyset,
+        FromNormalizedStr,
+    };
 
     use super::*;
 
@@ -497,7 +614,21 @@ mod test {
             (three_plus_four.clone(), empty_annotations.clone()),
         ));
         let errs = empty();
-        let pr = PartialResponse::new(a, bc, d, e, fg, h, errs);
+        let pr = PartialResponse::new(
+            a,
+            bc,
+            d,
+            e,
+            fg,
+            h,
+            errs,
+            Arc::new(Request::new_unchecked(
+                EntityUIDEntry::Unknown { loc: None },
+                EntityUIDEntry::Unknown { loc: None },
+                EntityUIDEntry::Unknown { loc: None },
+                Some(Context::empty()),
+            )),
+        );
 
         let a = Policy::from_when_clause(
             Effect::Permit,
@@ -647,6 +778,75 @@ mod test {
                 &(ErrorState::NoError, Arc::default())
             )),
             None,
+        );
+    }
+
+    #[test]
+    fn reauthorize() {
+        let policies = parse_policyset(
+            r#"
+            permit(principal, action, resource) when {
+                principal == NS::"a" && resource == NS::"b"
+            };
+            forbid(principal, action, resource) when {
+                context.b
+            };
+        "#,
+        )
+        .unwrap();
+
+        let context_unknown = Context::from_pairs(
+            std::iter::once((
+                "b".into(),
+                RestrictedExpr::unknown(Unknown::new_untyped("b")),
+            )),
+            Extensions::all_available(),
+        )
+        .unwrap();
+
+        let partial_request = Request {
+            principal: EntityUIDEntry::known(r#"NS::"a""#.parse().unwrap(), None),
+            action: EntityUIDEntry::Unknown { loc: None },
+            resource: EntityUIDEntry::Unknown { loc: None },
+            context: Some(context_unknown),
+        };
+
+        let entities = Entities::new();
+
+        let authorizer = Authorizer::new();
+        let partial_response = authorizer.is_authorized_core(partial_request, &policies, &entities);
+
+        let response_with_concrete_resource = partial_response
+            .reauthorize(
+                &HashMap::from_iter(std::iter::once((
+                    "resource".into(),
+                    EntityUID::from_normalized_str(r#"NS::"b""#).unwrap().into(),
+                ))),
+                &authorizer,
+                &entities,
+            )
+            .unwrap();
+
+        assert_eq!(
+            response_with_concrete_resource
+                .definitely_satisfied()
+                .next()
+                .unwrap()
+                .effect(),
+            Effect::Permit
+        );
+
+        let response_with_concrete_context_attr = response_with_concrete_resource
+            .reauthorize(
+                &HashMap::from_iter(std::iter::once(("b".into(), true.into()))),
+                &authorizer,
+                &entities,
+            )
+            .unwrap();
+
+        assert_eq!(
+            response_with_concrete_context_attr.decision(),
+            Some(Decision::Deny)
         );
     }
 }

@@ -158,7 +158,7 @@ impl Entity {
     /// assert_eq!(entity.attr("department").unwrap().unwrap(), EvalResult::String("CS".to_string()));
     /// assert!(entity.attr("foo").is_none());
     /// ```
-    pub fn attr(&self, attr: &str) -> Option<Result<EvalResult, impl miette::Diagnostic>> {
+    pub fn attr(&self, attr: &str) -> Option<Result<EvalResult, PartialValueToValueError>> {
         let v = match ast::Value::try_from(self.0.get(attr)?.clone()) {
             Ok(v) => v,
             Err(e) => return Some(Err(e)),
@@ -182,9 +182,9 @@ impl Entity {
                 (
                     k.to_string(),
                     match v {
-                        ast::PartialValue::Value(val) => RestrictedExpression(
-                            ast::RestrictedExpr::new_unchecked(ast::Expr::from(val)),
-                        ),
+                        ast::PartialValue::Value(val) => {
+                            RestrictedExpression(ast::RestrictedExpr::from(val))
+                        }
                         ast::PartialValue::Residual(exp) => {
                             RestrictedExpression(ast::RestrictedExpr::new_unchecked(exp))
                         }
@@ -647,6 +647,14 @@ impl Entities {
     pub fn write_to_json(&self, f: impl std::io::Write) -> std::result::Result<(), EntitiesError> {
         self.0.write_to_json(f)
     }
+
+    #[doc = include_str!("../experimental_warning.md")]
+    /// Visualize an `Entities` object in the graphviz `dot`
+    /// format. Entity visualization is best-effort and not well tested.
+    /// Feel free to submit an issue if you are using this feature and would like it improved.
+    pub fn to_dot_str(&self) -> String {
+        self.0.to_dot_str()
+    }
 }
 
 /// Utilities for defining `IntoIterator` over `Entities`
@@ -839,7 +847,7 @@ pub struct Response {
 #[doc = include_str!("../experimental_warning.md")]
 #[cfg(feature = "partial-eval")]
 #[repr(transparent)]
-#[derive(Debug, PartialEq, Eq, Clone, RefCast)]
+#[derive(Debug, Clone, RefCast)]
 pub struct PartialResponse(cedar_policy_core::authorizer::PartialResponse);
 
 #[cfg(feature = "partial-eval")]
@@ -1183,7 +1191,7 @@ impl Validator {
 #[derive(Debug)]
 pub struct SchemaFragment {
     value: cedar_policy_validator::ValidatorSchemaFragment,
-    lossless: cedar_policy_validator::SchemaFragment,
+    lossless: cedar_policy_validator::SchemaFragment<cedar_policy_validator::RawName>,
 }
 
 impl SchemaFragment {
@@ -1193,7 +1201,7 @@ impl SchemaFragment {
     pub fn namespaces(&self) -> impl Iterator<Item = Option<EntityNamespace>> + '_ {
         self.value
             .namespaces()
-            .map(|ns| ns.as_ref().map(|ns| EntityNamespace(ns.clone())))
+            .map(|ns| ns.map(|ns| EntityNamespace(ns.clone())))
     }
 
     /// Create an `SchemaFragment` from a JSON value (which should be an
@@ -1210,7 +1218,10 @@ impl SchemaFragment {
     pub fn from_file_natural(
         r: impl std::io::Read,
     ) -> Result<(Self, impl Iterator<Item = SchemaWarning>), HumanSchemaError> {
-        let (lossless, warnings) = cedar_policy_validator::SchemaFragment::from_file_natural(r)?;
+        let (lossless, warnings) = cedar_policy_validator::SchemaFragment::from_file_natural(
+            r,
+            Extensions::all_available(),
+        )?;
         Ok((
             Self {
                 value: lossless.clone().try_into()?,
@@ -1224,7 +1235,10 @@ impl SchemaFragment {
     pub fn from_str_natural(
         src: &str,
     ) -> Result<(Self, impl Iterator<Item = SchemaWarning>), HumanSchemaError> {
-        let (lossless, warnings) = cedar_policy_validator::SchemaFragment::from_str_natural(src)?;
+        let (lossless, warnings) = cedar_policy_validator::SchemaFragment::from_str_natural(
+            src,
+            Extensions::all_available(),
+        )?;
         Ok((
             Self {
                 value: lossless.clone().try_into()?,
@@ -1234,7 +1248,7 @@ impl SchemaFragment {
         ))
     }
 
-    /// Create a `SchemaFragment` directly from a file.
+    /// Create a [`SchemaFragment`] directly from a file.
     pub fn from_file(file: impl std::io::Read) -> Result<Self, SchemaError> {
         let lossless = cedar_policy_validator::SchemaFragment::from_file(file)?;
         Ok(Self {
@@ -1263,7 +1277,7 @@ impl SchemaFragment {
 impl TryInto<Schema> for SchemaFragment {
     type Error = SchemaError;
 
-    /// Convert `SchemaFragment` into a `Schema`. To build the `Schema` we
+    /// Convert [`SchemaFragment`] into a [`Schema`]. To build the [`Schema`] we
     /// need to have all entity types defined, so an error will be returned if
     /// any undeclared entity types are referenced in the schema fragment.
     fn try_into(self) -> Result<Schema, Self::Error> {
@@ -2087,8 +2101,8 @@ impl Template {
     /// If `id` is Some, then the resulting template will have that `id`.
     /// If the `id` is None, the parser will use the default "policy0".
     /// The behavior around None may change in the future.
-    pub fn parse(id: Option<String>, src: impl AsRef<str>) -> Result<Self, ParseErrors> {
-        let ast = parser::parse_policy_template(id, src.as_ref())?;
+    pub fn parse(id: Option<PolicyId>, src: impl AsRef<str>) -> Result<Self, ParseErrors> {
+        let ast = parser::parse_policy_template(id.map(Into::into), src.as_ref())?;
         Ok(Self {
             ast,
             lossless: LosslessPolicy::policy_or_template_text(src.as_ref()),
@@ -2524,8 +2538,8 @@ impl Policy {
     /// This can fail if the policy fails to parse.
     /// It can also fail if a template was passed in, as this function only accepts static
     /// policies
-    pub fn parse(id: Option<String>, policy_src: impl AsRef<str>) -> Result<Self, ParseErrors> {
-        let inline_ast = parser::parse_policy(id, policy_src.as_ref())?;
+    pub fn parse(id: Option<PolicyId>, policy_src: impl AsRef<str>) -> Result<Self, ParseErrors> {
+        let inline_ast = parser::parse_policy(id.map(Into::into), policy_src.as_ref())?;
         let (_, ast) = ast::Template::link_static_policy(inline_ast);
         Ok(Self {
             ast,
@@ -2962,13 +2976,17 @@ impl RestrictedExpression {
 fn decimal_extension_name() -> ast::Name {
     // PANIC SAFETY: This is a constant and is known to be safe, verified by a test
     #[allow(clippy::unwrap_used)]
-    ast::Name::unqualified_name("decimal".parse().unwrap())
+    ast::UncheckedName::unqualified_name("decimal".parse().unwrap())
+        .try_into()
+        .unwrap()
 }
 
 fn ip_extension_name() -> ast::Name {
     // PANIC SAFETY: This is a constant and is known to be safe, verified by a test
     #[allow(clippy::unwrap_used)]
-    ast::Name::unqualified_name("ip".parse().unwrap())
+    ast::UncheckedName::unqualified_name("ip".parse().unwrap())
+        .try_into()
+        .unwrap()
 }
 
 impl FromStr for RestrictedExpression {
@@ -3383,6 +3401,49 @@ impl Context {
     ) -> Result<impl ContextSchema, ContextJsonError> {
         cedar_policy_validator::context_schema_for_action(&schema.0, action.as_ref())
             .ok_or_else(|| ContextJsonError::missing_action(action.clone()))
+    }
+
+    /// Merge this [`Context`] with another context (or iterator over
+    /// `(String, RestrictedExpression)` pairs), returning an error if the two
+    /// contain overlapping keys
+    pub fn merge(
+        self,
+        other_context: impl IntoIterator<Item = (String, RestrictedExpression)>,
+    ) -> Result<Self, ContextCreationError> {
+        Self::from_pairs(self.into_iter().chain(other_context))
+    }
+}
+
+/// Utilities for implementing `IntoIterator` for `Context`
+mod context {
+    use super::{ast, RestrictedExpression};
+
+    /// `IntoIter` iterator for `Context`
+    #[derive(Debug)]
+    pub struct IntoIter {
+        pub(super) inner: <ast::Context as IntoIterator>::IntoIter,
+    }
+
+    impl Iterator for IntoIter {
+        type Item = (String, RestrictedExpression);
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.inner
+                .next()
+                .map(|(k, v)| (k.to_string(), RestrictedExpression(v)))
+        }
+    }
+}
+
+impl IntoIterator for Context {
+    type Item = (String, RestrictedExpression);
+
+    type IntoIter = context::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Self::IntoIter {
+            inner: self.0.into_iter(),
+        }
     }
 }
 

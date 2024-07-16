@@ -19,15 +19,16 @@
 
 use std::collections::HashSet;
 
-use cedar_policy_core::ast::{Expr, Template, Var};
-use cedar_policy_core::{ast::StaticPolicy, parser::parse_policy};
+use cedar_policy_core::ast::{Expr, PolicyID, StaticPolicy, Template, Var};
+use cedar_policy_core::parser::parse_policy;
 
 use super::test_utils::{assert_expected_type_errors, assert_expected_warnings, empty_schema_file};
 use crate::typecheck::Typechecker;
 use crate::types::{EntityLUB, Type};
 use crate::validation_errors::{AttributeAccess, UnexpectedTypeHelp};
 use crate::{
-    NamespaceDefinition, ValidationError, ValidationMode, ValidationWarning, ValidatorSchema,
+    NamespaceDefinition, RawName, ValidationError, ValidationMode, ValidationWarning,
+    ValidatorSchema,
 };
 
 #[track_caller] // report the caller's location as the location of the panic, not the location in this function
@@ -373,13 +374,13 @@ mod passes_empty_schema {
     #[test]
     fn context_attr() {
         let p = parse_policy(
-            Some("0".to_string()),
+            Some(PolicyID::from_string("0")),
             r#"permit(principal, action, resource) when { context.foo };"#,
         )
         .expect("Policy should parse.");
         assert_typechecks_partial_schema(p);
         let p = parse_policy(
-            Some("0".to_string()),
+            Some(PolicyID::from_string("0")),
             r#"permit(principal, action, resource) when { context.foo.bar };"#,
         )
         .expect("Policy should parse.");
@@ -499,7 +500,7 @@ mod fails_empty_schema {
     }
 }
 
-fn partial_schema_file() -> NamespaceDefinition {
+fn partial_schema_file() -> NamespaceDefinition<RawName> {
     serde_json::from_value(serde_json::json!(
         {
             "entityTypes": {
@@ -624,7 +625,7 @@ mod passes_partial_schema {
     #[test]
     fn policy_in_set_action_and_other() {
         let p = parse_policy(
-            Some("0".to_string()),
+            Some(PolicyID::from_string("0")),
             r#"permit(principal, action, resource) when { User::"alice" in [action, User::"alice"] };"#,
         ).expect("Policy should parse.");
         assert_typechecks_partial_schema(p);
@@ -633,7 +634,7 @@ mod passes_partial_schema {
     #[test]
     fn policy_action_in_set_action_and_other() {
         let p = parse_policy(
-            Some("0".to_string()),
+            Some(PolicyID::from_string("0")),
             r#"permit(principal, action, resource) when { action in [action, User::"alice"] };"#,
         )
         .expect("Policy should parse.");
@@ -643,7 +644,7 @@ mod passes_partial_schema {
     #[test]
     fn context_attr() {
         let p = parse_policy(
-            Some("0".to_string()),
+            Some(PolicyID::from_string("0")),
             r#"permit(principal, action == Action::"view_photo", resource) when { context.foo };"#,
         )
         .expect("Policy should parse.");

@@ -20,6 +20,7 @@ use crate::ast::*;
 use crate::entities::{Dereference, Entities};
 use crate::extensions::Extensions;
 use crate::parser::Loc;
+use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -95,6 +96,8 @@ impl<'e> RestrictedEvaluator<'e> {
     /// Interpret a `RestrictedExpr` into a `Value` in this evaluation environment.
     ///
     /// May return an error, for instance if an extension function returns an error
+    ///
+    /// INVARIANT: If this returns a residual, the residual expression must be a valid restricted expression.
     pub fn partial_interpret(&self, expr: BorrowedRestrictedExpr<'_>) -> Result<PartialValue> {
         stack_size_check()?;
 
@@ -123,6 +126,8 @@ impl<'e> RestrictedEvaluator<'e> {
     /// `partial_interpret()` -- ie, so we can make sure the source locations of
     /// all errors are set properly before returning them from
     /// `partial_interpret()`.
+    ///
+    /// INVARIANT: If this returns a residual, the residual expression must be a valid restricted expression.
     fn partial_interpret_internal(
         &self,
         expr: &BorrowedRestrictedExpr<'_>,
@@ -863,6 +868,14 @@ impl Value {
         match &self.value {
             ValueKind::Set(set) => Ok(set),
             _ => Err(EvaluationError::type_error_single(Type::Set, self)),
+        }
+    }
+
+    /// Convert the `Value` to a Record, or throw a type error if it's not a Record.
+    pub(crate) fn get_as_record(&self) -> Result<&Arc<BTreeMap<SmolStr, Value>>> {
+        match &self.value {
+            ValueKind::Record(rec) => Ok(rec),
+            _ => Err(EvaluationError::type_error_single(Type::Record, self)),
         }
     }
 
@@ -1917,12 +1930,11 @@ pub mod test {
                 ("bar".into(), Expr::val(4)),
                 ("foo".into(), Expr::val("hi")),
             ]),
-            Err(
-                expression_construction_errors::DuplicateKeyInRecordLiteralError {
-                    key: "foo".into()
-                }
-                .into()
-            )
+            Err(expression_construction_errors::DuplicateKeyError {
+                key: "foo".into(),
+                context: "in record literal",
+            }
+            .into())
         );
         // entity_with_attrs.address.street
         assert_eq!(
@@ -4214,7 +4226,7 @@ pub mod test {
     #[test]
     fn template_interp() {
         let t = parse_policy_template(
-            Some("template".to_string()),
+            Some(PolicyID::from_string("template")),
             r#"permit(principal == ?principal, action, resource);"#,
         )
         .expect("Parse Error");
@@ -4402,7 +4414,7 @@ pub mod test {
             Either::Left(_) => panic!("Evalled to a value"),
             Either::Right(expr) => {
                 println!("{expr}");
-                assert!(expr.is_unknown());
+                assert!(expr.contains_unknown());
                 let m: HashMap<_, _> = [("principal".into(), Value::from(euid))]
                     .into_iter()
                     .collect();
@@ -5524,12 +5536,11 @@ pub mod test {
         ]);
         assert_eq!(
             e,
-            Err(
-                expression_construction_errors::DuplicateKeyInRecordLiteralError {
-                    key: "a".into()
-                }
-                .into()
-            )
+            Err(expression_construction_errors::DuplicateKeyError {
+                key: "a".into(),
+                context: "in record literal",
+            }
+            .into())
         );
 
         let e = Expr::record([
@@ -5538,12 +5549,11 @@ pub mod test {
         ]);
         assert_eq!(
             e,
-            Err(
-                expression_construction_errors::DuplicateKeyInRecordLiteralError {
-                    key: "a".into()
-                }
-                .into()
-            )
+            Err(expression_construction_errors::DuplicateKeyError {
+                key: "a".into(),
+                context: "in record literal",
+            }
+            .into())
         );
 
         let e = Expr::record([

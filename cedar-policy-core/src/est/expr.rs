@@ -340,6 +340,14 @@ impl Expr {
         Expr::ExprNoExt(ExprNoExt::Slot(slot))
     }
 
+    /// An extension call with one arg, which is the name of the unknown
+    pub fn unknown(name: impl Into<SmolStr>) -> Self {
+        Expr::ext_call(
+            "unknown".into(),
+            vec![Expr::lit(CedarValueJson::String(name.into()))],
+        )
+    }
+
     /// `!`
     pub fn not(e: Expr) -> Self {
         Expr::ExprNoExt(ExprNoExt::Not { arg: Arc::new(e) })
@@ -721,11 +729,7 @@ impl From<ast::Expr> for Expr {
             ast::ExprKind::Lit(lit) => lit.into(),
             ast::ExprKind::Var(var) => var.into(),
             ast::ExprKind::Slot(slot) => slot.into(),
-            ast::ExprKind::Unknown(ast::Unknown { name, .. }) => {
-                // Create a Vec<Expr> with one arg, which is the name of the extension function
-                let args = vec![Expr::lit(CedarValueJson::String(name))];
-                Expr::ext_call("unknown".to_string().into(), args)
-            }
+            ast::ExprKind::Unknown(ast::Unknown { name, .. }) => Expr::unknown(name),
             ast::ExprKind::If {
                 test_expr,
                 then_expr,
@@ -1102,17 +1106,20 @@ fn interpret_primary(
                 (&[], cst::Ident::Action) => Ok(Either::Right(Expr::var(ast::Var::Action))),
                 (&[], cst::Ident::Resource) => Ok(Either::Right(Expr::var(ast::Var::Resource))),
                 (&[], cst::Ident::Context) => Ok(Either::Right(Expr::var(ast::Var::Context))),
-                (path, cst::Ident::Ident(id)) => Ok(Either::Left(ast::Name::new(
-                    id.parse()?,
-                    path.iter()
-                        .map(|node| {
-                            node.try_as_inner()
-                                .map_err(Into::into)
-                                .and_then(|id| id.to_string().parse().map_err(Into::into))
-                        })
-                        .collect::<Result<Vec<ast::Id>, ParseErrors>>()?,
-                    Some(node.loc.clone()),
-                ))),
+                (path, cst::Ident::Ident(id)) => Ok(Either::Left(
+                    ast::UncheckedName::new(
+                        id.parse()?,
+                        path.iter()
+                            .map(|node| {
+                                node.try_as_inner()
+                                    .map_err(Into::into)
+                                    .and_then(|id| id.to_string().parse().map_err(Into::into))
+                            })
+                            .collect::<Result<Vec<ast::Id>, ParseErrors>>()?,
+                        Some(node.loc.clone()),
+                    )
+                    .try_into()?,
+                )),
                 (path, id) => {
                     let (l, r, src) = match (path.first(), path.last()) {
                         (Some(l), Some(r)) => (
@@ -1599,7 +1606,7 @@ fn maybe_with_parens(f: &mut std::fmt::Formatter<'_>, expr: &Expr) -> std::fmt::
         Expr::ExprNoExt(ExprNoExt::Record(_)) |
         Expr::ExprNoExt(ExprNoExt::Value(_)) |
         Expr::ExprNoExt(ExprNoExt::Var(_)) |
-        Expr::ExprNoExt(ExprNoExt::Slot(_)) |
+        Expr::ExprNoExt(ExprNoExt::Slot(_)) => write!(f, "{expr}"),
 
         // we want parens here because things like parse((!x).y)
         // would be printed into !x.y which has a different meaning

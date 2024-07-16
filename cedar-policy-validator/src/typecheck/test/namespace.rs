@@ -25,6 +25,7 @@ use std::vec;
 
 use cedar_policy_core::{
     ast::{EntityUID, Expr, PolicyID, StaticPolicy},
+    extensions::Extensions,
     parser::parse_policy,
 };
 
@@ -36,10 +37,10 @@ use crate::{
     diagnostics::ValidationError,
     types::{EntityLUB, Type},
     validation_errors::AttributeAccess,
-    SchemaError, SchemaFragment, ValidationWarning, ValidatorSchema,
+    RawName, SchemaError, SchemaFragment, ValidationWarning, ValidatorSchema,
 };
 
-fn namespaced_entity_type_schema() -> SchemaFragment {
+fn namespaced_entity_type_schema() -> SchemaFragment<RawName> {
     serde_json::from_str(
         r#"
             { "N::S": {
@@ -186,7 +187,7 @@ fn namespaced_entity_wrong_namespace() {
 
 #[test]
 fn namespaced_entity_type_in_attribute() {
-    let schema: SchemaFragment = serde_json::from_str(
+    let schema: SchemaFragment<RawName> = serde_json::from_str(
         r#"{ "N::S":
             {
                 "entityTypes": {
@@ -234,7 +235,7 @@ fn namespaced_entity_type_in_attribute() {
 
 #[test]
 fn namespaced_entity_type_member_of() {
-    let schema: SchemaFragment = serde_json::from_value(serde_json::json!(
+    let schema: SchemaFragment<RawName> = serde_json::from_value(serde_json::json!(
     {"N::S": {
         "entityTypes": {
             "Foo": {
@@ -243,12 +244,14 @@ fn namespaced_entity_type_member_of() {
             "Fiz": {
                 "memberOfTypes": ["Bar"]
             },
-            "Bar": { }
+            "Bar": { },
+            "Resource" : { }
         },
         "actions": {
           "baz": {
             "appliesTo": {
-              "principalTypes": [ "Foo", "Fiz" ]
+              "principalTypes": [ "Foo", "Fiz" ],
+              "resourceTypes": [ "Resource" ]
             }
           }
         }
@@ -265,7 +268,7 @@ fn namespaced_entity_type_member_of() {
 
 #[test]
 fn namespaced_entity_type_applies_to() {
-    let schema: SchemaFragment = serde_json::from_value(serde_json::json!(
+    let schema: SchemaFragment<RawName> = serde_json::from_value(serde_json::json!(
     {"N::S": {
         "entityTypes": {
             "Foo": { },
@@ -291,7 +294,7 @@ fn namespaced_entity_type_applies_to() {
 
 #[test]
 fn multiple_namespaces_literals() {
-    let authorization_model: SchemaFragment = serde_json::from_value(json!(
+    let authorization_model: SchemaFragment<RawName> = serde_json::from_value(json!(
         {
             "A": {
                 "entityTypes": {"Foo": {}},
@@ -329,7 +332,7 @@ fn multiple_namespaces_literals() {
 
 #[test]
 fn multiple_namespaces_attributes() {
-    let authorization_model: SchemaFragment = serde_json::from_value(json!(
+    let authorization_model: SchemaFragment<RawName> = serde_json::from_value(json!(
         {
             "A": {
                 "entityTypes": {
@@ -377,18 +380,20 @@ fn multiple_namespaces_attributes() {
 
 #[test]
 fn multiple_namespaces_member_of() {
-    let authorization_model: SchemaFragment = serde_json::from_value(json!(
+    let authorization_model: SchemaFragment<RawName> = serde_json::from_value(json!(
         {
             "A": {
                 "entityTypes": {
                     "Foo": {
                         "memberOfTypes": ["B::Foo"]
-                    }
+                    },
+                    "Bar": {}
                 },
                 "actions": {
                     "act": {
                         "appliesTo": {
-                            "principalTypes": ["Foo"]
+                            "principalTypes": ["Foo"],
+                            "resourceTypes" : ["Bar"]
                         }
                     }
                 }
@@ -414,7 +419,7 @@ fn multiple_namespaces_member_of() {
 
 #[test]
 fn multiple_namespaces_applies_to() {
-    let authorization_model: SchemaFragment = serde_json::from_value(json!(
+    let authorization_model: SchemaFragment<RawName> = serde_json::from_value(json!(
         {
             "A": {
                 "entityTypes": {
@@ -491,7 +496,7 @@ fn assert_policy_typecheck_fails_namespace_schema(
 #[test]
 fn namespaced_entity_is_wrong_type_and() {
     let policy = parse_policy(
-        Some("0".to_string()),
+        Some(PolicyID::from_string("0")),
         r#"
             permit(principal, action, resource)
             when {
@@ -515,7 +520,7 @@ fn namespaced_entity_is_wrong_type_and() {
 #[test]
 fn namespaced_entity_is_wrong_type_when() {
     let policy = parse_policy(
-        Some("0".to_string()),
+        Some(PolicyID::from_string("0")),
         r#"
             permit(principal, action, resource)
             when {
@@ -551,6 +556,7 @@ fn multi_namespace_action_eq() {
                 action "Action" appliesTo { context: {}, principal : [E], resource : [E]};
             }
         "#,
+        Extensions::all_available(),
     )
     .unwrap();
 
@@ -600,6 +606,7 @@ fn multi_namespace_action_in() {
             }
             namespace NS4 { action "Group"; }
         "#,
+        Extensions::all_available(),
     )
     .unwrap();
 
@@ -669,6 +676,7 @@ fn test_cedar_policy_642() {
             };
         }
         "#,
+        Extensions::all_available(),
     )
     .unwrap();
 
@@ -695,6 +703,7 @@ fn multi_namespace_action_group_cycle() {
             namespace B { action "Act" in A::Action::"Act"; }
             namespace C { action "Act" in B::Action::"Act"; }
         "#,
+        Extensions::all_available(),
     )
     .unwrap();
     assert_matches!(

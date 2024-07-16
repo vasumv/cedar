@@ -64,13 +64,13 @@ impl<'a> entities::Schema for CoreSchema<'a> {
 
     fn entity_types_with_basename<'b>(
         &'b self,
-        basename: &'b ast::Id,
+        basename: &'b ast::UnreservedId,
     ) -> Box<dyn Iterator<Item = ast::EntityType> + 'b> {
         Box::new(
             self.schema
                 .entity_types()
                 .filter_map(move |(entity_type, _)| {
-                    if entity_type.name().basename() == basename {
+                    if &entity_type.name().basename() == basename {
                         Some(entity_type.clone())
                     } else {
                         None
@@ -223,7 +223,7 @@ impl ast::RequestSchema for ValidatorSchema {
                 if let Some(context) = request.context() {
                     let expected_context_ty = validator_action_id.context_type();
                     if !expected_context_ty
-                        .typecheck_partial_value(context.as_ref(), extensions)
+                        .typecheck_partial_value(&context.clone().into(), extensions)
                         .map_err(RequestValidationError::TypeOfContext)?
                     {
                         return Err(request_validation_errors::InvalidContextError {
@@ -450,7 +450,7 @@ pub fn context_schema_for_action(
     // as their values are representable. The values are representable
     // because they are taken from the context of a `ValidatorActionId`
     // which was constructed directly from a schema.
-    schema.context_type(action).map(ContextSchema)
+    schema.context_type(action).cloned().map(ContextSchema)
 }
 
 #[cfg(test)]

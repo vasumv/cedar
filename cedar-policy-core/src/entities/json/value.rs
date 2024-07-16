@@ -18,10 +18,6 @@ use super::{
     err::{JsonDeserializationError, JsonDeserializationErrorContext, JsonSerializationError},
     SchemaType,
 };
-use crate::ast::{
-    expression_construction_errors, BorrowedRestrictedExpr, Eid, EntityUID, ExprKind,
-    ExpressionConstructionError, Literal, Name, RestrictedExpr, Unknown, Value, ValueKind,
-};
 use crate::entities::{
     conformance::err::EntitySchemaConformanceError,
     json::err::{EscapeKind, TypeMismatchError},
@@ -29,6 +25,13 @@ use crate::entities::{
 };
 use crate::extensions::Extensions;
 use crate::FromNormalizedStr;
+use crate::{
+    ast::{
+        expression_construction_errors, BorrowedRestrictedExpr, Eid, EntityUID, ExprKind,
+        ExpressionConstructionError, Literal, RestrictedExpr, Unknown, Value, ValueKind,
+    },
+    entities::Name,
+};
 use either::Either;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -248,9 +251,9 @@ impl CedarValueJson {
                     .collect::<Result<Vec<_>, JsonDeserializationError>>()?,
             )
             .map_err(|e| match e {
-                ExpressionConstructionError::DuplicateKeyInRecordLiteral(
-                    expression_construction_errors::DuplicateKeyInRecordLiteralError { key },
-                ) => JsonDeserializationError::duplicate_key_in_record_literal(ctx(), key),
+                ExpressionConstructionError::DuplicateKey(
+                    expression_construction_errors::DuplicateKeyError { key, .. },
+                ) => JsonDeserializationError::duplicate_key(ctx(), key),
             })?),
             Self::EntityEscape { __entity: entity } => Ok(RestrictedExpr::val(
                 EntityUID::try_from(entity.clone()).map_err(|errs| {
@@ -561,11 +564,9 @@ impl<'e> ValueParser<'e> {
                     // duplicate keys; they're both maps), but we can still throw
                     // the error properly in the case that it somehow happens
                     RestrictedExpr::record(rexpr_pairs).map_err(|e| match e {
-                        ExpressionConstructionError::DuplicateKeyInRecordLiteral(
-                            expression_construction_errors::DuplicateKeyInRecordLiteralError {
-                                key,
-                            },
-                        ) => JsonDeserializationError::duplicate_key_in_record_literal(ctx2(), key),
+                        ExpressionConstructionError::DuplicateKey(
+                            expression_construction_errors::DuplicateKeyError { key, .. },
+                        ) => JsonDeserializationError::duplicate_key(ctx2(), key),
                     })
                 }
                 val => {

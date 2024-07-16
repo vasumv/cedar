@@ -106,7 +106,7 @@ impl EntityTypeName {
     /// assert_eq!(type_name.basename(), "User");
     /// ```
     pub fn basename(&self) -> &str {
-        self.0.name().basename().as_ref()
+        self.0.as_ref().basename_as_ref().as_ref()
     }
 
     /// Get the namespace of the `EntityTypeName`, as components
@@ -120,7 +120,11 @@ impl EntityTypeName {
     /// assert_eq!(components.next(), None);
     /// ```
     pub fn namespace_components(&self) -> impl Iterator<Item = &str> {
-        self.0.name().namespace_components().map(AsRef::as_ref)
+        self.0
+            .name()
+            .as_ref()
+            .namespace_components()
+            .map(AsRef::as_ref)
     }
 
     /// Get the full namespace of the `EntityTypeName`, as a single string.
@@ -132,7 +136,7 @@ impl EntityTypeName {
     /// assert_eq!(components,"Namespace::MySpace");
     /// ```
     pub fn namespace(&self) -> String {
-        self.0.name().namespace()
+        self.0.as_ref().as_ref().namespace()
     }
 }
 
@@ -151,13 +155,6 @@ impl FromStr for EntityTypeName {
 impl std::fmt::Display for EntityTypeName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
-    }
-}
-
-#[doc(hidden)]
-impl From<ast::Name> for EntityTypeName {
-    fn from(name: ast::Name) -> Self {
-        Self(name.into())
     }
 }
 
@@ -313,9 +310,9 @@ impl From<ast::EntityUID> for EntityUid {
 
 /// Unique ids assigned to policies and templates.
 ///
-/// A [`PolicyId`] can can be constructed using [`PolicyId::from_str`] or by
-/// calling `parse()` on a string.
-/// This implementation is [`Infallible`], so the parsed [`EntityId`] can be extracted safely.
+/// A [`PolicyId`] can can be constructed using [`PolicyId::new`] or by calling
+/// `parse()` on a string. The `parse()` implementation is [`Infallible`], so
+/// the parsed [`EntityId`] can be extracted safely.
 /// Examples:
 /// ```
 /// # use cedar_policy::PolicyId;
@@ -373,7 +370,7 @@ impl From<PolicyId> for ast::PolicyID {
 /// Identifier for a Template slot
 #[repr(transparent)]
 #[allow(clippy::module_name_repetitions)]
-#[derive(Debug, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, RefCast)]
+#[derive(Debug, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, RefCast, Serialize, Deserialize)]
 pub struct SlotId(ast::SlotId);
 
 impl SlotId {
