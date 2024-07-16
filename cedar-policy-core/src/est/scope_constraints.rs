@@ -32,6 +32,7 @@ extern crate tsify;
 #[serde(tag = "op")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum PrincipalConstraint {
     /// No constraint (e.g., `principal,`)
     #[serde(alias = "all")]
@@ -53,6 +54,7 @@ pub enum PrincipalConstraint {
 #[serde(tag = "op")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ActionConstraint {
     /// No constraint (i.e., `action,`)
     #[serde(alias = "all")]
@@ -71,6 +73,7 @@ pub enum ActionConstraint {
 #[serde(tag = "op")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ResourceConstraint {
     /// No constraint (e.g., `resource,`)
     #[serde(alias = "all")]
@@ -91,6 +94,7 @@ pub enum ResourceConstraint {
 #[serde(untagged)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum EqConstraint {
     /// `==` a literal entity
     Entity {
@@ -111,6 +115,7 @@ pub enum EqConstraint {
 #[serde(untagged)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum PrincipalOrResourceInConstraint {
     /// `in` a literal entity
     Entity {
@@ -131,6 +136,7 @@ pub enum PrincipalOrResourceInConstraint {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct PrincipalOrResourceIsConstraint {
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     entity_type: SmolStr,
@@ -145,6 +151,7 @@ pub struct PrincipalOrResourceIsConstraint {
 #[serde(untagged)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ActionInConstraint {
     /// Single entity
     Single {

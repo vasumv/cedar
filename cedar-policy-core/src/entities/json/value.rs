@@ -742,6 +742,14 @@ pub enum EntityUidJson<Context = NoStaticContext> {
     FoundValue(#[cfg_attr(feature = "wasm", tsify(type = "__skip"))] serde_json::Value),
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for EntityUidJson {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let entity: EntityUID = u.arbitrary()?;
+        Ok(EntityUidJson::from(entity))
+    }
+}
+
 impl<'de, C: DeserializationContext> DeserializeAs<'de, EntityUID> for EntityUidJson<C> {
     fn deserialize_as<D>(deserializer: D) -> Result<EntityUID, D::Error>
     where

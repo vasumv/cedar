@@ -33,6 +33,7 @@ use std::sync::Arc;
 ///
 /// Cloning is O(1).
 #[derive(Serialize, Deserialize, Hash, Debug, PartialEq, Eq, Clone, PartialOrd, Ord)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Literal {
     /// Boolean value
     Bool(bool),

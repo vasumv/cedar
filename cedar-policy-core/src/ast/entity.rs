@@ -258,6 +258,7 @@ impl<'a> arbitrary::Arbitrary<'a> for EntityUID {
 /// To get an escaped representation, use `.escaped()`.
 /// To get an unescaped representation, use `.as_ref()`.
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Eid(SmolStr);
 
 impl Eid {
@@ -284,13 +285,13 @@ impl AsRef<str> for Eid {
     }
 }
 
-#[cfg(feature = "arbitrary")]
-impl<'a> arbitrary::Arbitrary<'a> for Eid {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let x: String = u.arbitrary()?;
-        Ok(Self(x.into()))
-    }
-}
+// #[cfg(feature = "arbitrary")]
+// impl<'a> arbitrary::Arbitrary<'a> for Eid {
+//     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+//         let x: String = u.arbitrary()?;
+//         Ok(Self(x.into()))
+//     }
+// }
 
 /// Entity datatype
 #[derive(Debug, Clone, Serialize)]

@@ -291,6 +291,7 @@ impl<'de> Deserialize<'de> for UncheckedName {
 // want to generalize later
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SlotId(pub(crate) ValidSlotId);
 
 impl SlotId {
@@ -332,6 +333,7 @@ impl std::fmt::Display for SlotId {
 
 /// Two possible variants for Slots
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub(crate) enum ValidSlotId {
     #[serde(rename = "?principal")]
     Principal,

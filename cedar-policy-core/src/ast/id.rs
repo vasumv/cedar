@@ -256,6 +256,7 @@ impl<'de> Deserialize<'de> for UnreservedId {
 //
 // For now, internally, `AnyId`s are just owned `SmolString`s.
 #[derive(Serialize, Debug, PartialEq, Eq, Clone, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct AnyId(SmolStr);
 
 impl AnyId {

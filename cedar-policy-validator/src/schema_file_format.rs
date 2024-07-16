@@ -62,6 +62,7 @@ use crate::{
 #[serde(transparent)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SchemaFragment<N>(
     #[serde(deserialize_with = "deserialize_schema_fragment")]
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, NamespaceDefinition>"))]
@@ -178,6 +179,7 @@ impl<N: Display> SchemaFragment<N> {
 #[doc(hidden)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct NamespaceDefinition<N> {
     #[serde(default)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
@@ -239,6 +241,7 @@ impl NamespaceDefinition<RawName> {
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct EntityType<N> {
     /// Entities of this [`EntityType`] are allowed to be members of entities of
     /// these types.
@@ -276,6 +279,7 @@ impl EntityType<RawName> {
 #[serde(transparent)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct AttributesOrContext<N>(
     // We use the usual `SchemaType` deserialization, but it will ultimately
     // need to be a `Record` or type def which resolves to a `Record`.
@@ -323,6 +327,7 @@ impl AttributesOrContext<RawName> {
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ActionType<N> {
     /// This maps attribute names to
     /// `cedar_policy_core::entities::CedarValueJson` which is the
@@ -372,6 +377,7 @@ impl ActionType<RawName> {
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ApplySpec<N> {
     /// Resource types that are valid for the action
     pub resource_types: Vec<N>,
@@ -409,6 +415,7 @@ impl ApplySpec<RawName> {
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ActionEntityUID<N> {
     /// Represents the [`cedar_policy_core::ast::Eid`] of the action
     pub id: SmolStr,
@@ -464,6 +471,7 @@ impl ActionEntityUID<RawName> {
 #[serde(untagged)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum SchemaType<N> {
     /// One of the standard types exposed to users
     Type(SchemaTypeVariant<N>),
@@ -907,6 +915,7 @@ impl<N> From<SchemaTypeVariant<N>> for SchemaType<N> {
 #[serde(bound(deserialize = "N: Deserialize<'de> + From<RawName>"))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum SchemaTypeVariant<N> {
     /// String
     String,
@@ -1009,53 +1018,53 @@ fn is_partial_schema_default(b: &bool) -> bool {
 // We forbid declaring a custom typedef with the same name as a builtin type.
 pub(crate) static PRIMITIVE_TYPES: &[&str] = &["String", "Long", "Boolean"];
 
-#[cfg(feature = "arbitrary")]
-// PANIC SAFETY property testing code
-#[allow(clippy::panic)]
-impl<'a> arbitrary::Arbitrary<'a> for SchemaType<RawName> {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<SchemaType<RawName>> {
-        use std::collections::BTreeSet;
+// #[cfg(feature = "arbitrary")]
+// // PANIC SAFETY property testing code
+// #[allow(clippy::panic)]
+// impl<'a> arbitrary::Arbitrary<'a> for SchemaType<RawName> {
+//     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<SchemaType<RawName>> {
+//         use std::collections::BTreeSet;
 
-        Ok(SchemaType::Type(match u.int_in_range::<u8>(1..=8)? {
-            1 => SchemaTypeVariant::String,
-            2 => SchemaTypeVariant::Long,
-            3 => SchemaTypeVariant::Boolean,
-            4 => SchemaTypeVariant::Set {
-                element: Box::new(u.arbitrary()?),
-            },
-            5 => {
-                let attributes = {
-                    let attr_names: BTreeSet<String> = u.arbitrary()?;
-                    attr_names
-                        .into_iter()
-                        .map(|attr_name| Ok((attr_name.into(), u.arbitrary()?)))
-                        .collect::<arbitrary::Result<_>>()?
-                };
-                SchemaTypeVariant::Record {
-                    attributes,
-                    additional_attributes: u.arbitrary()?,
-                }
-            }
-            6 => SchemaTypeVariant::Entity {
-                name: u.arbitrary()?,
-            },
-            7 => SchemaTypeVariant::Extension {
-                // PANIC SAFETY: `ipaddr` is a valid `UnreservedId`
-                #[allow(clippy::unwrap_used)]
-                name: "ipaddr".parse().unwrap(),
-            },
-            8 => SchemaTypeVariant::Extension {
-                // PANIC SAFETY: `decimal` is a valid `UnreservedId`
-                #[allow(clippy::unwrap_used)]
-                name: "decimal".parse().unwrap(),
-            },
-            n => panic!("bad index: {n}"),
-        }))
-    }
-    fn size_hint(_depth: usize) -> (usize, Option<usize>) {
-        (1, None) // Unfortunately, we probably can't be more precise than this
-    }
-}
+//         Ok(SchemaType::Type(match u.int_in_range::<u8>(1..=8)? {
+//             1 => SchemaTypeVariant::String,
+//             2 => SchemaTypeVariant::Long,
+//             3 => SchemaTypeVariant::Boolean,
+//             4 => SchemaTypeVariant::Set {
+//                 element: Box::new(u.arbitrary()?),
+//             },
+//             5 => {
+//                 let attributes = {
+//                     let attr_names: BTreeSet<String> = u.arbitrary()?;
+//                     attr_names
+//                         .into_iter()
+//                         .map(|attr_name| Ok((attr_name.into(), u.arbitrary()?)))
+//                         .collect::<arbitrary::Result<_>>()?
+//                 };
+//                 SchemaTypeVariant::Record {
+//                     attributes,
+//                     additional_attributes: u.arbitrary()?,
+//                 }
+//             }
+//             6 => SchemaTypeVariant::Entity {
+//                 name: u.arbitrary()?,
+//             },
+//             7 => SchemaTypeVariant::Extension {
+//                 // PANIC SAFETY: `ipaddr` is a valid `UnreservedId`
+//                 #[allow(clippy::unwrap_used)]
+//                 name: "ipaddr".parse().unwrap(),
+//             },
+//             8 => SchemaTypeVariant::Extension {
+//                 // PANIC SAFETY: `decimal` is a valid `UnreservedId`
+//                 #[allow(clippy::unwrap_used)]
+//                 name: "decimal".parse().unwrap(),
+//             },
+//             n => panic!("bad index: {n}"),
+//         }))
+//     }
+//     fn size_hint(_depth: usize) -> (usize, Option<usize>) {
+//         (1, None) // Unfortunately, we probably can't be more precise than this
+//     }
+// }
 
 /// Used to describe the type of a record or entity attribute. It contains a the
 /// type of the attribute and whether the attribute is required. The type is
@@ -1077,6 +1086,7 @@ impl<'a> arbitrary::Arbitrary<'a> for SchemaType<RawName> {
 /// they will be denied (`<https://github.com/serde-rs/serde/issues/1600>`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Eq, PartialOrd, Ord)]
 #[serde(bound(deserialize = "N: Deserialize<'de> + From<RawName>"))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TypeOfAttribute<N> {
     /// Underlying type of the attribute
     #[serde(flatten)]
@@ -1096,22 +1106,22 @@ impl TypeOfAttribute<RawName> {
     }
 }
 
-#[cfg(feature = "arbitrary")]
-impl<'a> arbitrary::Arbitrary<'a> for TypeOfAttribute<RawName> {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(Self {
-            ty: u.arbitrary()?,
-            required: u.arbitrary()?,
-        })
-    }
+// #[cfg(feature = "arbitrary")]
+// impl<'a> arbitrary::Arbitrary<'a> for TypeOfAttribute<RawName> {
+//     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+//         Ok(Self {
+//             ty: u.arbitrary()?,
+//             required: u.arbitrary()?,
+//         })
+//     }
 
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        arbitrary::size_hint::and(
-            <SchemaType<RawName> as arbitrary::Arbitrary>::size_hint(depth),
-            <bool as arbitrary::Arbitrary>::size_hint(depth),
-        )
-    }
-}
+//     fn size_hint(depth: usize) -> (usize, Option<usize>) {
+//         arbitrary::size_hint::and(
+//             <SchemaType<RawName> as arbitrary::Arbitrary>::size_hint(depth),
+//             <bool as arbitrary::Arbitrary>::size_hint(depth),
+//         )
+//     }
+// }
 
 // Only used for serialization
 fn is_record_attribute_required_default(b: &bool) -> bool {

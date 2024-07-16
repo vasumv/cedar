@@ -32,6 +32,7 @@ pub enum PatternElem {
 /// Also provides an implementation of the Display trait as well as a wildcard matching method.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Pattern {
     /// A vector of pattern elements
     elems: Arc<Vec<PatternElem>>,
