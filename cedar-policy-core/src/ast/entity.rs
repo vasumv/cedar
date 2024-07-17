@@ -311,6 +311,18 @@ pub struct Entity {
     ancestors: HashSet<EntityUID>,
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for Entity {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let uid = u.arbitrary()?;
+        let attrs = u.arbitrary()?;
+        let ancestors = u.arbitrary()?;
+        let entity = Self::new(uid, attrs, ancestors, &Extensions::all_available())
+            .map_err(|e| arbitrary::Error::IncorrectFormat)?;
+        Ok(entity)
+    }
+}
+
 impl Entity {
     /// Create a new `Entity` with this UID, attributes, and ancestors
     pub fn new(

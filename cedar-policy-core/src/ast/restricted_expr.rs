@@ -54,6 +54,14 @@ use thiserror::Error;
 #[serde(transparent)]
 pub struct RestrictedExpr(Expr);
 
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for RestrictedExpr {
+    fn arbitrary(g: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<Self> {
+        let expr = Expr::arbitrary(g)?;
+        Ok(Self::new(expr).map_err(|_| arbitrary::Error::IncorrectFormat)?)
+    }
+}
+
 impl RestrictedExpr {
     /// Create a new `RestrictedExpr` from an `Expr`.
     ///

@@ -14,7 +14,11 @@
  * limitations under the License.
  */
 
-use crate::{ast::*, parser::err::ParseErrors, parser::Loc};
+use crate::{
+    ast::*,
+    est,
+    parser::{err::ParseErrors, Loc},
+};
 use miette::Diagnostic;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -40,6 +44,17 @@ pub struct Expr<T = ()> {
     expr_kind: ExprKind<T>,
     source_loc: Option<Loc>,
     data: T,
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for Expr {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let est_expr: est::Expr = u.arbitrary()?;
+        let expr = est_expr
+            .try_into_ast(u.arbitrary()?)
+            .map_err(|_| arbitrary::Error::IncorrectFormat)?;
+        Ok(expr)
+    }
 }
 
 /// The possible expression variants. This enum should be matched on by code

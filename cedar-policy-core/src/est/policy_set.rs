@@ -28,6 +28,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct PolicySet {
     /// The set of templates in a policy set
     #[serde_as(as = "serde_with::MapPreventDuplicates<_,_>")]
@@ -80,6 +81,7 @@ impl PolicySet {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TemplateLink {
     /// Id of the template to link against
     pub template_id: PolicyID,

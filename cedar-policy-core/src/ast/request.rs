@@ -223,6 +223,15 @@ pub enum Context {
     RestrictedResidual(Arc<BTreeMap<SmolStr, Expr>>),
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for Context {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let pairs: Vec<(SmolStr, RestrictedExpr)> = u.arbitrary()?;
+        Ok(Self::from_pairs(pairs, Extensions::all_available())
+            .map_err(|_| arbitrary::Error::IncorrectFormat)?)
+    }
+}
+
 impl Context {
     /// Create an empty `Context`
     pub fn empty() -> Self {
