@@ -44,6 +44,15 @@ pub struct UncheckedName {
     pub(crate) loc: Option<Loc>,
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for UncheckedName {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let id: Id = u.arbitrary()?;
+        let path: Vec<Id> = u.arbitrary()?;
+        Ok(Self::new(id, path, None))
+    }
+}
+
 /// `PartialEq` implementation ignores the `loc`.
 impl PartialEq for UncheckedName {
     fn eq(&self, other: &Self) -> bool {
@@ -245,17 +254,6 @@ impl FromNormalizedStr for UncheckedName {
     }
 }
 
-#[cfg(feature = "arbitrary")]
-impl<'a> arbitrary::Arbitrary<'a> for UncheckedName {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(Self {
-            id: u.arbitrary()?,
-            path: u.arbitrary()?,
-            loc: None,
-        })
-    }
-}
-
 struct NameVisitor;
 
 impl<'de> serde::de::Visitor<'de> for NameVisitor {
@@ -396,6 +394,7 @@ mod vars_test {
 /// A new type which indicates that the contained [`UncheckedName`] does not contain
 /// reserved `__cedar`, as specified by RFC 52
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Serialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(transparent)]
 pub struct Name(pub(crate) UncheckedName);
 
@@ -527,21 +526,21 @@ impl AsRef<UncheckedName> for Name {
     }
 }
 
-#[cfg(feature = "arbitrary")]
-impl<'a> arbitrary::Arbitrary<'a> for Name {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let basename: UnreservedId = u.arbitrary()?;
-        let path: Vec<UnreservedId> = u.arbitrary()?;
-        let name = UncheckedName::new(basename.into(), path.into_iter().map(|id| id.into()), None);
-        // PANIC SAFETY: `name` is made of `UnreservedId`s and thus should be a valid `Name`
-        #[allow(clippy::unwrap_used)]
-        Ok(name.try_into().unwrap())
-    }
+// #[cfg(feature = "arbitrary")]
+// impl<'a> arbitrary::Arbitrary<'a> for Name {
+//     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+//         let basename: UnreservedId = u.arbitrary()?;
+//         let path: Vec<UnreservedId> = u.arbitrary()?;
+//         let name = UncheckedName::new(basename.into(), path.into_iter().map(|id| id.into()), None);
+//         // PANIC SAFETY: `name` is made of `UnreservedId`s and thus should be a valid `Name`
+//         #[allow(clippy::unwrap_used)]
+//         Ok(name.try_into().unwrap())
+//     }
 
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        <UncheckedName as arbitrary::Arbitrary>::size_hint(depth)
-    }
-}
+//     fn size_hint(depth: usize) -> (usize, Option<usize>) {
+//         <UncheckedName as arbitrary::Arbitrary>::size_hint(depth)
+//     }
+// }
 
 #[cfg(test)]
 mod test {
