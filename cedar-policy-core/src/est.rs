@@ -65,7 +65,7 @@ pub struct Policy {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     #[serde_as(as = "serde_with::MapPreventDuplicates<_,_>")]
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, string>"))]
-    annotations: BTreeMap<ast::AnyId, SmolStr>,
+    pub annotations: BTreeMap<ast::AnyId, SmolStr>,
 }
 
 /// Serde JSON structure for a `when` or `unless` clause in the EST format
